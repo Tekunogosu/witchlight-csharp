@@ -5,6 +5,7 @@ using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
+using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
 namespace Mapstique;
@@ -34,16 +35,252 @@ public class MapstiqueClient : ModSystem
             .RegisterMessageType<SharedMarkers>()
             .RegisterMessageType<PaletteRequest>()
             .RegisterMessageType<PaletteTable>()
+            .RegisterMessageType<IconRequest>()
+            .RegisterMessageType<IconTable>()
+            .RegisterMessageType<SkinColorRequest>()
+            .RegisterMessageType<SkinColorTable>()
+            .RegisterMessageType<PortraitRequest>()
+            .RegisterMessageType<PlayerPortrait>()
             .SetMessageHandler<SharedMarkers>(OnMarkers)
-            .SetMessageHandler<PaletteRequest>(OnPaletteRequest);
+            .SetMessageHandler<PaletteRequest>(OnPaletteRequest)
+            .SetMessageHandler<IconRequest>(OnIconRequest)
+            .SetMessageHandler<SkinColorRequest>(OnSkinColorRequest)
+            .SetMessageHandler<PortraitRequest>(OnPortraitRequest);
+
+        _portrait = new PortraitCapture(api);
 
         api.ChatCommands
             .Create("mapstique")
             .WithDescription("Mapstique map tools")
+            .BeginSubCommand("portrait")
+            .WithDescription("Send the map a picture of your character")
+            .HandleWith(OnPortrait)
+            .EndSubCommand()
             .BeginSubCommand("palette")
             .WithDescription("Build the block colour palette for the server you are on")
             .HandleWith(OnPalette)
+            .EndSubCommand()
+            .BeginSubCommand("colors")
+            .WithDescription("Send the skin part colours to the server you are on")
+            .HandleWith(OnColors)
+            .EndSubCommand()
+            .BeginSubCommand("icons")
+            .WithDescription("Send the marker pictures to the server you are on")
+            .HandleWith(OnIcons)
             .EndSubCommand();
+    }
+
+    /// <summary>
+    /// Sends what each skin part variant looks like, because the server asked.
+    ///
+    /// The colours are not written down anywhere: the game works each one out by
+    /// sampling its texture, on the client, at load. So this reads back what the
+    /// game already resolved rather than resolving it again.
+    /// </summary>
+    /// <summary>The server asked for a picture, so one is drawn and sent.</summary>
+    private void OnPortraitRequest(PortraitRequest request) => SendPortrait(quiet: true);
+
+    /// <summary>Draws this player and sends the picture to the server.</summary>
+    private TextCommandResult OnPortrait(TextCommandCallingArgs args)
+    {
+        if (_capi is null || _portrait is null)
+        {
+            return TextCommandResult.Error("not connected to a world");
+        }
+
+        if (NotAnAdmin() is { } refused)
+        {
+            return refused;
+        }
+
+        SendPortrait(quiet: false);
+        return TextCommandResult.Success("drawing your character...");
+    }
+
+    /// <summary>
+    /// Draws this player and sends the picture.
+    ///
+    /// The drawing happens in a frame, so the answer arrives after whoever asked
+    /// has been answered. Said in chat when somebody typed a command, and only to
+    /// the log when the server asked unprompted — one is a question waiting for an
+    /// answer and the other is not.
+    /// </summary>
+    private void SendPortrait(bool quiet)
+    {
+        if (_capi is null || _portrait is null)
+        {
+            return;
+        }
+
+        _portrait.Take((png, said) =>
+        {
+            if (png is null)
+            {
+                // Said whoever asked. A server that asked for a picture and hears
+                // nothing cannot tell a refusal from a slow answer, and the player
+                // is the only one whose screen can explain it.
+                _capi.Logger.Warning("[mapstique] could not draw a portrait: {0}", said);
+                _capi.ShowChatMessage($"Mapstique: could not draw your portrait — {said}");
+                return;
+            }
+
+            _capi.Network.GetChannel(SharedServer.Channel).SendPacket(new PlayerPortrait { Png = png });
+            _capi.Logger.Notification("[mapstique] sent a {0} byte portrait ({1})", png.Length, said);
+            if (!quiet)
+            {
+                // Bytes, not kilobytes. A picture of nothing weighs a hundred and
+                // fifty bytes and rounds to "0 KiB", which reads as a unit being
+                // silly rather than as an empty render — and it cost an evening.
+                _capi.ShowChatMessage($"Mapstique: sent your portrait, {png.Length} bytes — {said}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Why a player may not do this, or nothing when they may.
+    ///
+    /// The server takes these from admins only and says so in its own log when it
+    /// refuses one. Checked here as well so that somebody who is not an admin is
+    /// told, rather than left watching a command succeed and nothing happen.
+    /// </summary>
+    private TextCommandResult? NotAnAdmin()
+    {
+        var player = _capi?.World?.Player;
+        if (player is null || player.HasPrivilege(Privilege.controlserver))
+        {
+            return null;
+        }
+
+        return TextCommandResult.Error(
+            "the map only takes these from admins on this server");
+    }
+
+    /// <summary>Draws this player when asked. Only a client can: nobody else has them.</summary>
+    private PortraitCapture? _portrait;
+
+    private void OnSkinColorRequest(SkinColorRequest request)
+    {
+        SendColors(new HashSet<string>(request.Have ?? new List<string>()), quiet: true);
+    }
+
+    private TextCommandResult OnColors(TextCommandCallingArgs args)
+    {
+        var sent = SendColors(new HashSet<string>(), quiet: false);
+        return sent > 0
+            ? TextCommandResult.Success($"sent {sent} skin part colours")
+            : TextCommandResult.Error("this client could not work out any skin part colours");
+    }
+
+    private int SendColors(HashSet<string> already, bool quiet)
+    {
+        var skinnable = _capi?.World?.Player?.Entity?.GetBehavior<EntityBehaviorExtraSkinnable>();
+        if (_capi is null || skinnable?.AvailableSkinParts is null)
+        {
+            return 0;
+        }
+
+        var table = new SkinColorTable();
+        foreach (var part in skinnable.AvailableSkinParts)
+        {
+            if (part?.Variants is null)
+            {
+                continue;
+            }
+
+            foreach (var variant in part.Variants)
+            {
+                // Zero means the game could not read a texture for it either.
+                if (variant?.Code is null || variant.Color == 0 || already.Contains(variant.Code))
+                {
+                    continue;
+                }
+
+                // The game packs these the way it packs a waypoint's colour.
+                var hex = $"#{variant.Color & 0xff:x2}{(variant.Color >> 8) & 0xff:x2}{(variant.Color >> 16) & 0xff:x2}";
+                table.Names.Add(variant.Code);
+                table.Colors.Add(hex);
+            }
+        }
+
+        if (table.Names.Count == 0)
+        {
+            return 0;
+        }
+
+        _capi.Network.GetChannel(SharedServer.Channel).SendPacket(table);
+        _capi.Logger.Notification("[mapstique] sent {0} skin part colours", table.Names.Count);
+        if (!quiet)
+        {
+            _capi.ShowChatMessage($"Mapstique: sent {table.Names.Count} skin part colours");
+        }
+        return table.Names.Count;
+    }
+
+    /// <summary>
+    /// Sends the marker pictures, because the server asked.
+    ///
+    /// A dedicated server's install has no SVG in it at all, so the pictures a
+    /// marker is drawn with cannot come from there. Only what the server says it
+    /// is missing is sent, so a mod added later costs one icon rather than the
+    /// whole set again.
+    /// </summary>
+    private void OnIconRequest(IconRequest request)
+    {
+        Send(new HashSet<string>(request.Have ?? new List<string>()), quiet: true);
+    }
+
+    private TextCommandResult OnIcons(TextCommandCallingArgs args)
+    {
+        var sent = Send(new HashSet<string>(), quiet: false);
+        return sent > 0
+            ? TextCommandResult.Success($"sent {sent} marker pictures")
+            : TextCommandResult.Error("this client has no marker pictures to send");
+    }
+
+    /// <summary>Reads every icon this client can see and sends what the server lacks.</summary>
+    private int Send(HashSet<string> already, bool quiet)
+    {
+        if (_capi is null)
+        {
+            return 0;
+        }
+
+        var icons = new List<(string, byte[])>();
+        foreach (var asset in _capi.Assets.GetMany("textures/icons/worldmap", null, true))
+        {
+            if (asset?.Location is null || asset.Data is null || asset.Data.Length == 0)
+            {
+                continue;
+            }
+
+            var name = Icons.NameOf(asset.Location.GetName());
+            if (name is null || already.Contains(name))
+            {
+                continue;
+            }
+
+            icons.Add((name, asset.Data));
+        }
+
+        if (icons.Count == 0)
+        {
+            return 0;
+        }
+
+        var slices = IconTable.Slice(icons);
+        foreach (var slice in slices)
+        {
+            _capi.Network.GetChannel(SharedServer.Channel).SendPacket(slice);
+        }
+
+        _capi.Logger.Notification(
+            "[mapstique] sent {0} marker pictures in {1} packet(s)", icons.Count, slices.Count);
+        if (!quiet)
+        {
+            _capi.ShowChatMessage($"Mapstique: sent {icons.Count} marker pictures");
+        }
+
+        return icons.Count;
     }
 
     /// <summary>

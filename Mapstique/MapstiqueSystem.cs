@@ -31,22 +31,47 @@ public class MapstiqueSystem : ModSystem
             .RegisterMessageType<SharedMarkers>()
             .RegisterMessageType<PaletteRequest>()
             .RegisterMessageType<PaletteTable>()
-            .SetMessageHandler<PaletteTable>(OnPaletteFromClient);
-        api.Event.PlayerNowPlaying += player =>
+            .RegisterMessageType<IconRequest>()
+            .RegisterMessageType<IconTable>()
+            .RegisterMessageType<SkinColorRequest>()
+            .RegisterMessageType<SkinColorTable>()
+            .RegisterMessageType<PortraitRequest>()
+            .RegisterMessageType<PlayerPortrait>()
+            .SetMessageHandler<PaletteTable>(OnPaletteFromClient)
+            .SetMessageHandler<IconTable>(OnIconsFromClient)
+            .SetMessageHandler<SkinColorTable>(OnSkinColorsFromClient)
+            .SetMessageHandler<PlayerPortrait>(OnPortraitFromClient);
+        api.Event.PlayerNowPlaying += player => Safely("greeting a player", () =>
         {
             SharedServer.SendTo(api, player);
             AskForPalette(player);
-        };
+            AskForIcons(player);
+            AskForSkinColors(player);
+            SayWhereTheMapIs(player);
+        });
         _service = new MapService(ExportDir, api.Logger);
+
+        // Where the game counts from, so the map can agree with what a player
+        // reads off their own screen. Written when the world is ready rather than
+        // here: spawn is not known while mods are still starting, and asking for
+        // it then threw — which left the map counting from absolute zero, with
+        // nothing on either side looking wrong.
+        // Everything that needs a world rather than a mod: where the world counts
+        // from, and the service that serves it.
+        api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, () => Safely("starting up", () =>
+        {
+            KeepWorldFacts();
+            StartService();
+        }));
 
         // Markers ride the timer that already pushes them to players in game:
         // they change a few times an hour, and a post that says nothing new is
         // dropped before it is sent anyway.
-        api.Event.RegisterGameTickListener(_ =>
+        api.Event.RegisterGameTickListener(_ => Safely("sharing markers", () =>
         {
             SharedServer.SendToAll(api);
             _service?.Markers(Live.WaypointsJson(api));
-        }, ShareIntervalMs);
+        }), ShareIntervalMs);
 
         // A map this build cannot read is thrown away rather than upgraded: the
         // format still moves, and it rebuilds itself as players explore.
@@ -80,18 +105,21 @@ public class MapstiqueSystem : ModSystem
         // every chunk it loads, which is the whole signal an export needs. Without
         // it each tick re-reads the surface of every chunk in memory to discover
         // that almost none of it moved.
-        api.Event.ChunkDirty += (coord, chunk, reason) => _dirty.Mark(coord.X, coord.Z, reason);
+        api.Event.ChunkDirty += (coord, chunk, reason) =>
+            Safely("noting a changed chunk", () => _dirty.Mark(coord.X, coord.Z, reason));
 
         // A tick listener rather than a load event: it is guaranteed to fire, and
         // repeating it keeps the map current without anyone typing a command.
-        api.Event.RegisterGameTickListener(_ => Export("timer"), ExportIntervalMs);
+        api.Event.RegisterGameTickListener(
+            _ => Safely("exporting", () => Export("timer")), ExportIntervalMs);
 
         // Players move, so this goes far more often than the terrain — and it
         // goes over the socket rather than to a file, because a position is worth
         // nothing by the time a disk has finished with it.
-        api.Event.RegisterGameTickListener(_ => PostPlayers(), LiveIntervalMs);
-        api.Event.RegisterCallback(_ => Seed(SeedRadius), SeedDelayMs);
-        api.Event.GameWorldSave += () => Export("world save");
+        api.Event.RegisterGameTickListener(
+            _ => Safely("posting players", PostPlayers), LiveIntervalMs);
+        api.Event.RegisterCallback(_ => Safely("seeding the map", () => Seed(SeedRadius)), SeedDelayMs);
+        api.Event.GameWorldSave += () => Safely("exporting on save", () => Export("world save"));
         // Version first, and on every start: the quickest way to tell a deployed
         // mod from the one you meant to deploy. The map service prints its own for
         // the same reason, and the two must match on minor version.
@@ -112,6 +140,21 @@ public class MapstiqueSystem : ModSystem
             .BeginSubCommand("status")
                 .WithDescription("What has been exported, and where the palette came from")
                 .HandleWith(OnStatus)
+            .EndSubCommand()
+            .BeginSubCommand("service")
+                .WithDescription("The map service: `status`, `start` or `stop`")
+                .WithArgs(api.ChatCommands.Parsers.OptionalWord("action"))
+                .HandleWith(OnService)
+            .EndSubCommand()
+            .BeginSubCommand("portrait")
+                .WithDescription("Ask a player's client for a picture of their character")
+                .WithArgs(api.ChatCommands.Parsers.OptionalWord("player"))
+                .HandleWith(OnPortraitFetch)
+            .EndSubCommand()
+            .BeginSubCommand("icons")
+                .WithDescription("Ask an admin's client for the marker pictures")
+                .WithArgs(api.ChatCommands.Parsers.OptionalWord("player"))
+                .HandleWith(OnIconFetch)
             .EndSubCommand()
             .BeginSubCommand("palette")
                 .WithDescription("Ask an admin's client for a block colour palette")
@@ -134,6 +177,129 @@ public class MapstiqueSystem : ModSystem
     }
 
     /// <summary>
+    /// Tells a player where the map is as they join.
+    ///
+    /// A map nobody knows the address of is a map nobody looks at, and this is the
+    /// half that can say so in chat. The settings are read each time rather than
+    /// held, so turning the message off takes effect on the next join instead of
+    /// on the next restart.
+    ///
+    /// Nothing is said when there is no address to give. That covers a service
+    /// that is not running, one somebody else runs somewhere this cannot see, and
+    /// a server whose real address only its operator knows and has not said.
+    /// </summary>
+    private void SayWhereTheMapIs(IServerPlayer player)
+    {
+        if (_sapi is null || !ServiceProcess.Announces(ServiceProcess.ConfigPath))
+        {
+            return;
+        }
+
+        if (ServiceProcess.Announcement(ServiceProcess.ConfigPath, ExportDir) is not { } where)
+        {
+            return;
+        }
+
+        _sapi.SendMessage(
+            player,
+            GlobalConstants.GeneralChatGroup,
+            $"The map is at {where}",
+            EnumChatType.Notification);
+    }
+
+    /// <summary>
+    /// Brings up the map service, unless the settings say somebody else will.
+    ///
+    /// Once, at the point the world is ready: the service reads the palette and
+    /// the exported regions at start, and both are on disk by then.
+    /// </summary>
+    private void StartService()
+    {
+        if (_sapi is null || _serviceProcess is not null)
+        {
+            return;
+        }
+
+        _serviceProcess = ServiceProcess.Prepare(_sapi, Mod, ExportDir);
+        if (_serviceProcess is null)
+        {
+            return;
+        }
+
+        if (!_serviceProcess.Wanted)
+        {
+            _sapi.Logger.Notification(
+                "[mapstique] autostart is off in {0}, so the map service was not started — "
+                + "run `mapstique serve` yourself to serve the map",
+                ServiceProcess.ConfigPath);
+            return;
+        }
+
+        _serviceProcess.Start();
+    }
+
+    /// <summary>The map service, when this server is the one running it.</summary>
+    private ServiceProcess? _serviceProcess;
+
+    /// <summary>
+    /// Runs one piece of work, and never lets it out.
+    ///
+    /// A game tick listener that throws does not merely fail that tick. The
+    /// server records a listener as having run only after its handler returns —
+    /// the store comes after the call, with nothing to catch in between — so a
+    /// handler that throws leaves the listener permanently due and it fires again
+    /// on the very next pass of the server loop. That turned one unready entity
+    /// into a hundred thousand identical errors in four seconds, which is the
+    /// server's own error threshold, and it shut itself down.
+    ///
+    /// Nothing this mod does is worth a server. Each kind of failure is reported
+    /// once and then held quiet: the hundredth copy of a stack trace says nothing
+    /// the first did not, and burying the log is its own kind of outage. A
+    /// different exception from the same work is a different failure and is said.
+    /// </summary>
+    private void Safely(string what, System.Action work)
+    {
+        try
+        {
+            work();
+        }
+        catch (System.Exception error)
+        {
+            if (_reported.Add($"{what}/{error.GetType().Name}"))
+            {
+                _sapi?.Logger.Error(
+                    "[mapstique] {0} failed, and this will not be reported again: {1}", what, error);
+            }
+        }
+    }
+
+    /// <summary>Which failures have already been said, so none is said twice.</summary>
+    private readonly HashSet<string> _reported = new();
+
+    /// <summary>
+    /// Makes sure where the world counts from has reached the map service, and
+    /// keeps trying until it has.
+    ///
+    /// Attempted when the world is ready and again on every export, because "the
+    /// world is ready" is a phase and having a spawn point is a fact, and the two
+    /// are not guaranteed to arrive in that order. Cheap to repeat: once it is
+    /// written this does nothing, and until it is the map is counting from
+    /// somewhere the players are not.
+    /// </summary>
+    private void KeepWorldFacts()
+    {
+        if (_wroteWorldFacts || _sapi is null)
+        {
+            return;
+        }
+
+        _wroteWorldFacts = WorldFacts.Write(_sapi, ExportDir);
+    }
+
+    /// <summary>Whether spawn has reached the map service yet.</summary>
+    private bool _wroteWorldFacts;
+
+    /// <summary>
     /// Writes the regions that have moved. Returns what happened, or null if it
     /// failed — the caller decides how loudly to say so.
     ///
@@ -147,6 +313,8 @@ public class MapstiqueSystem : ModSystem
         {
             return null;
         }
+
+        KeepWorldFacts();
 
         var dir = Regions.DirectoryIn(ExportDir);
         if (force)
@@ -236,6 +404,39 @@ public class MapstiqueSystem : ModSystem
         return file.Exists ? file.Length : 0;
     }
 
+    /// <summary>
+    /// Whether the colours a player chose can actually be read.
+    ///
+    /// A player drawn as a plain initial on the map looks the same whether the
+    /// colours were unreadable or the map is simply old, so the answer is stated
+    /// here rather than inferred from the far end.
+    /// </summary>
+    private string Readable()
+    {
+        if (_sapi is null)
+        {
+            return "server not ready";
+        }
+
+        var online = Live.Players(_sapi, ExportDir);
+        if (online.Count == 0)
+        {
+            return "nobody online to read";
+        }
+
+        var known = online.Count(p => p.Skin.Length > 0);
+        var colours = SkinColors.Count(ExportDir);
+        return $"{known} of {online.Count} players named their parts, "
+            + $"{colours} colours known for drawing them";
+    }
+
+    /// <summary>How many marker icons are on disk for the map service to draw with.</summary>
+    private static int IconCount()
+    {
+        var dir = Icons.DirectoryIn(ExportDir);
+        return Directory.Exists(dir) ? Directory.GetFiles(dir, "*.svg").Length : 0;
+    }
+
     /// <summary>Every chunk column the server currently holds in memory.</summary>
     private static IEnumerable<(int, int)> LoadedColumns(ICoreServerAPI api)
     {
@@ -270,9 +471,17 @@ public class MapstiqueSystem : ModSystem
         }
 
         var size = _sapi.WorldManager.ChunkSize;
-        var spawn = _sapi.World.DefaultSpawnPosition?.AsBlockPos;
-        var centerX = (spawn?.X ?? 0) / size;
-        var centerZ = (spawn?.Z ?? 0) / size;
+        var spawn = WorldFacts.Spawn(_sapi);
+        if (spawn is null)
+        {
+            _sapi.Logger.Warning(
+                "[mapstique] the world has no spawn point yet, so the map was not seeded — "
+                + "it will fill in as players explore");
+            return;
+        }
+
+        var centerX = spawn.Value.X / size;
+        var centerZ = spawn.Value.Z / size;
 
         _sapi.Logger.Notification(
             "[mapstique] loading {0}x{0} chunks around spawn to seed the map",
@@ -291,6 +500,42 @@ public class MapstiqueSystem : ModSystem
     /// looks wrong, since it says whether the palette is the server's own poor
     /// one or a good one from a client.
     /// </summary>
+    /// <summary>
+    /// The map service, from in game: whether it is up, and up or down on demand.
+    ///
+    /// Starting is deliberate and does not consult `autostart` — that setting says
+    /// who starts it unasked, and somebody typing the command has asked.
+    /// </summary>
+    private TextCommandResult OnService(TextCommandCallingArgs args)
+    {
+        if (_sapi is null)
+        {
+            return TextCommandResult.Error("server not ready");
+        }
+
+        var action = (args.Parsers[0].GetValue() as string ?? "status").ToLowerInvariant();
+
+        if (_serviceProcess is null && action != "status")
+        {
+            _serviceProcess = ServiceProcess.Prepare(_sapi, Mod, ExportDir);
+        }
+
+        if (_serviceProcess is null)
+        {
+            return TextCommandResult.Error(
+                "there is no bundled map service on this machine — see the server log, and run "
+                + "`mapstique serve` yourself to serve the map");
+        }
+
+        return action switch
+        {
+            "start" => TextCommandResult.Success(_serviceProcess.Start()),
+            "stop" => TextCommandResult.Success(_serviceProcess.Stop()),
+            "status" => TextCommandResult.Success(_serviceProcess.Describe()),
+            _ => TextCommandResult.Error($"no such action `{action}` — try status, start or stop"),
+        };
+    }
+
     private TextCommandResult OnStatus(TextCommandCallingArgs args)
     {
         if (_sapi is null)
@@ -313,6 +558,15 @@ public class MapstiqueSystem : ModSystem
                 ? "palette: none written yet"
                 : $"palette: from {palette.Source}, {palette.Coloured} of {palette.Blocks.Count} blocks coloured "
                   + $"({palette.Coverage:P0}), fingerprint {palette.Fingerprint}",
+            // The one line that would have shown the map counting from the wrong
+            // place: both halves have to be right, and neither is visible in game.
+            WorldFacts.Spawn(_sapi) is { } spawn
+                ? $"counts from: spawn at {spawn.X}, {spawn.Z}"
+                  + (File.Exists(Path.Combine(ExportDir, "world.json"))
+                      ? ""
+                      : "  (world.json not written — the map counts from absolute zero)")
+                : "counts from: absolute zero — the world has no readable spawn point",
+            _serviceProcess?.Describe() ?? $"service: not run from here; settings at {ServiceProcess.ConfigPath}",
             $"fingerprint now: {_fingerprint}"
                 + (palette is not null && palette.Fingerprint != _fingerprint ? "  (palette is stale)" : ""),
             _needsPalette
@@ -323,6 +577,9 @@ public class MapstiqueSystem : ModSystem
                 : "terrain: nothing exported yet",
             $"mapped: {_seasons.Count} chunks",
             $"markers: {Live.Waypoints(_sapi).Count} saved on this server",
+            $"icons: {IconCount()} for drawing them",
+            $"portraits: {Portraits.Count(ExportDir)} sent by players",
+            $"appearance: {Readable()}",
             $"players out: {_service?.PlayersHealth ?? "not started"}",
             $"markers out: {_service?.MarkersHealth ?? "not started"}",
             $"waiting: {_dirty.Count} columns changed since then",
@@ -420,6 +677,220 @@ public class MapstiqueSystem : ModSystem
         }, PaletteReplyWaitMs);
     }
 
+    /// <summary>
+    /// Asks one admin for the marker pictures.
+    ///
+    /// A dedicated server's install has no SVG in it, so unlike the palette this
+    /// is not a fallback for a poor result — it is the only way the pictures ever
+    /// arrive. Only an admin is asked, for the same reason as the palette: this
+    /// decides what everyone sees and it comes from a machine the server does not
+    /// control.
+    /// </summary>
+    private void AskForIcons(IServerPlayer player)
+    {
+        if (_sapi is null || !player.HasPrivilege(Privilege.controlserver))
+        {
+            return;
+        }
+
+        // Only what is missing. A mod adding one marker costs one icon, not the
+        // whole set again.
+        _sapi.Network.GetChannel(SharedServer.Channel)
+            .SendPacket(new IconRequest { Have = IconNames() }, player);
+    }
+
+    /// <summary>Asks one admin what the skin part variants look like.</summary>
+    private void AskForSkinColors(IServerPlayer player)
+    {
+        if (_sapi is null || !player.HasPrivilege(Privilege.controlserver))
+        {
+            return;
+        }
+
+        _sapi.Network.GetChannel(SharedServer.Channel)
+            .SendPacket(new SkinColorRequest { Have = SkinColors.Known(ExportDir) }, player);
+    }
+
+    /// <summary>
+    /// Takes a player's picture of themselves.
+    ///
+    /// Filed under who sent it rather than under anything in the message: a client
+    /// says what it looks like, not who it is. Admins only, for now — the same rule
+    /// every other thing a client sends the map already follows.
+    /// </summary>
+    private void OnPortraitFromClient(IServerPlayer player, PlayerPortrait portrait)
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        if (!player.HasPrivilege(Privilege.controlserver))
+        {
+            _sapi.Logger.Warning(
+                "[mapstique] ignored a portrait from {0}, who is not an admin", player.PlayerName);
+            return;
+        }
+
+        if (Portraits.Save(ExportDir, player.PlayerUID, portrait.Png, out var said))
+        {
+            _sapi.Logger.Notification("[mapstique] portrait from {0} ({1})", player.PlayerName, said);
+        }
+        else
+        {
+            _sapi.Logger.Warning(
+                "[mapstique] ignored a portrait from {0}: {1}", player.PlayerName, said);
+        }
+    }
+
+    private void OnSkinColorsFromClient(IServerPlayer player, SkinColorTable table)
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        if (!player.HasPrivilege(Privilege.controlserver))
+        {
+            _sapi.Logger.Warning(
+                "[mapstique] ignored skin colours from {0}, who is not an admin", player.PlayerName);
+            return;
+        }
+
+        var pairs = new List<(string, string)>();
+        var count = System.Math.Min(table.Names?.Count ?? 0, table.Colors?.Count ?? 0);
+        for (var at = 0; at < count; at++)
+        {
+            pairs.Add((table.Names![at], table.Colors![at]));
+        }
+
+        var added = SkinColors.Accept(pairs, ExportDir);
+        if (added > 0)
+        {
+            _sapi.Logger.Notification(
+                "[mapstique] {0} skin part colours from {1} ({2} known now)",
+                added, player.PlayerName, SkinColors.Count(ExportDir));
+        }
+    }
+
+    /// <summary>
+    /// Asks a player's client to draw them.
+    ///
+    /// Only their own machine can: nobody else's has that seraph loaded, which is
+    /// why the picture travels rather than a description of it. A player naming
+    /// nobody is asking for their own, which is the ordinary case.
+    /// </summary>
+    private TextCommandResult OnPortraitFetch(TextCommandCallingArgs args)
+    {
+        if (_sapi is null)
+        {
+            return TextCommandResult.Error("server not ready");
+        }
+
+        var target = args.Parsers[0].IsMissing
+            ? args.Caller.Player as IServerPlayer
+            : _sapi.World.AllOnlinePlayers
+                .OfType<IServerPlayer>()
+                .FirstOrDefault(player =>
+                    string.Equals(player.PlayerName, args[0] as string, System.StringComparison.OrdinalIgnoreCase));
+
+        if (target is null)
+        {
+            return TextCommandResult.Error(args.Parsers[0].IsMissing
+                ? "no player to ask — name one who is online, or run this in game"
+                : $"{args[0]} is not online");
+        }
+
+        if (!target.HasPrivilege(Privilege.controlserver))
+        {
+            return TextCommandResult.Error(
+                $"{target.PlayerName} is not an admin; pictures are only taken from admins");
+        }
+
+        _sapi.Network.GetChannel(SharedServer.Channel).SendPacket(new PortraitRequest(), target);
+        return TextCommandResult.Success($"asked {target.PlayerName} to draw themselves");
+    }
+
+    private TextCommandResult OnIconFetch(TextCommandCallingArgs args)
+    {
+        if (_sapi is null)
+        {
+            return TextCommandResult.Error("server not ready");
+        }
+
+        var target = args.Parsers[0].IsMissing
+            ? args.Caller.Player as IServerPlayer
+            : _sapi.World.AllOnlinePlayers
+                .OfType<IServerPlayer>()
+                .FirstOrDefault(player =>
+                    string.Equals(player.PlayerName, args[0] as string, System.StringComparison.OrdinalIgnoreCase));
+
+        if (target is null)
+        {
+            return TextCommandResult.Error(args.Parsers[0].IsMissing
+                ? "no player to ask — name an online admin, or run this in game"
+                : $"{args[0]} is not online");
+        }
+
+        if (!target.HasPrivilege(Privilege.controlserver))
+        {
+            return TextCommandResult.Error(
+                $"{target.PlayerName} is not an admin; pictures are only taken from admins");
+        }
+
+        // Everything, not only what is missing: this is the way back if an icon
+        // on disk is wrong rather than absent.
+        _sapi.Network.GetChannel(SharedServer.Channel)
+            .SendPacket(new IconRequest { Have = new List<string>() }, target);
+        return TextCommandResult.Success($"asked {target.PlayerName} for the marker pictures");
+    }
+
+    /// <summary>
+    /// Takes marker pictures from an admin's client and keeps what they add.
+    ///
+    /// Merged rather than replaced, like the palette: a client only has the art
+    /// for the mods it has installed, so two admins with different mod sets can
+    /// between them cover more than either alone.
+    /// </summary>
+    private void OnIconsFromClient(IServerPlayer player, IconTable table)
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        if (!player.HasPrivilege(Privilege.controlserver))
+        {
+            _sapi.Logger.Warning(
+                "[mapstique] ignored marker pictures from {0}, who is not an admin", player.PlayerName);
+            return;
+        }
+
+        var written = Icons.Accept(IconTable.Assemble(new[] { table }), ExportDir);
+        if (written > 0)
+        {
+            _sapi.Logger.Notification(
+                "[mapstique] {0} marker pictures from {1} ({2} in total now)",
+                written, player.PlayerName, IconCount());
+        }
+    }
+
+    /// <summary>What the server already has, so a client sends only what is new.</summary>
+    private static List<string> IconNames()
+    {
+        var dir = Icons.DirectoryIn(ExportDir);
+        if (!Directory.Exists(dir))
+        {
+            return new List<string>();
+        }
+
+        return Directory.GetFiles(dir, "*.svg")
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(name => !string.IsNullOrEmpty(name))
+            .Select(name => name!)
+            .ToList();
+    }
+
     /// <summary>How long to wait before saying an ask went unanswered.</summary>
     private const int PaletteReplyWaitMs = 30000;
 
@@ -510,7 +981,7 @@ public class MapstiqueSystem : ModSystem
     {
         if (_sapi is not null)
         {
-            _service?.Players(Live.PlayersJson(_sapi));
+            _service?.Players(Live.PlayersJson(_sapi, ExportDir));
         }
     }
 
@@ -521,6 +992,8 @@ public class MapstiqueSystem : ModSystem
     {
         _service?.Dispose();
         _service = null;
+        _serviceProcess?.Dispose();
+        _serviceProcess = null;
     }
 
     /// <summary>
@@ -585,6 +1058,9 @@ public class MapstiqueSystem : ModSystem
 
         var colorMaps = PaletteBuilder.ExportColorMaps(api, Path.Combine(ExportDir, "colormaps"));
         api.Logger.Notification("[mapstique] colour maps: {0} written", colorMaps);
+
+        var (icons, from) = Icons.Export(api, ExportDir);
+        api.Logger.Notification("[mapstique] marker icons: {0} written, from {1}", icons, from);
 
         api.Logger.Notification(
             "[mapstique] palette: {0} blocks written to {1}{2}",

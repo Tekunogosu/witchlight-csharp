@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
+using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
@@ -12,9 +14,45 @@ public class LivePlayer
 {
     public string Name { get; set; } = "";
     public string Uid { get; set; } = "";
+
+    /// <summary>
+    /// Which stored picture is this player's, or null where there is none.
+    ///
+    /// A name rather than the address of one, and worked out here rather than by
+    /// whoever draws the map: a player uid is base64 and carries characters a path
+    /// cannot, so the one place that files these decides what they are called.
+    /// </summary>
+    public string? Portrait { get; set; }
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
+
+    /// <summary>
+    /// Health and food, as the server already knows them.
+    ///
+    /// Both live in the entity's watched attributes, which is server side, so
+    /// nothing has to be asked of anyone to show them. Maximums travel with the
+    /// values because a player's can be raised, so a bare number would be a
+    /// fraction with a missing denominator.
+    /// </summary>
+    public float Health { get; set; }
+    public float MaxHealth { get; set; }
+    public float Saturation { get; set; }
+    public float MaxSaturation { get; set; }
+
+    /// <summary>
+    /// What this player looks like, as the names of the parts they chose.
+    ///
+    /// Names, not colours. A skin part's colour is not written down anywhere the
+    /// server can see: the definitions give each variant a texture and no colour
+    /// at all, and the textures are images a dedicated server does not ship. What
+    /// it does have is which variant each player applied — `skin4`, `mossgreen`,
+    /// `azure` — and the colour for a variant is the same for everyone, so it is
+    /// looked up once rather than asked per player.
+    /// </summary>
+    public string Skin { get; set; } = "";
+    public string Hair { get; set; } = "";
+    public string Eyes { get; set; } = "";
 }
 
 /// <summary>One map marker, as its owner placed it.</summary>
@@ -51,9 +89,9 @@ public class LiveWaypoint
 public static class Live
 {
     /// <summary>Who is online and where, as the map service wants it.</summary>
-    public static string PlayersJson(ICoreServerAPI api)
+    public static string PlayersJson(ICoreServerAPI api, string exports)
     {
-        return JsonConvert.SerializeObject(Players(api));
+        return JsonConvert.SerializeObject(Players(api, exports));
     }
 
     /// <summary>Every marker, as the map service wants it.</summary>
@@ -62,7 +100,7 @@ public static class Live
         return JsonConvert.SerializeObject(Waypoints(api));
     }
 
-    private static List<LivePlayer> Players(ICoreServerAPI api)
+    public static List<LivePlayer> Players(ICoreServerAPI api, string exports)
     {
         var players = new List<LivePlayer>();
         foreach (var player in api.World.AllOnlinePlayers)
@@ -73,6 +111,11 @@ public static class Live
                 continue;
             }
 
+            var (skin, hair, eyes) = Appearance(player.Entity);
+            var watched = player.Entity.WatchedAttributes;
+            var health = watched?.GetTreeAttribute("health");
+            var hunger = watched?.GetTreeAttribute("hunger");
+
             players.Add(new LivePlayer
             {
                 Name = player.PlayerName ?? "",
@@ -80,6 +123,14 @@ public static class Live
                 X = (int)position.X,
                 Y = (int)position.Y,
                 Z = (int)position.Z,
+                Health = health?.GetFloat("currenthealth") ?? 0f,
+                MaxHealth = health?.GetFloat("maxhealth") ?? 0f,
+                Saturation = hunger?.GetFloat("currentsaturation") ?? 0f,
+                MaxSaturation = hunger?.GetFloat("maxsaturation") ?? 0f,
+                Skin = skin,
+                Hair = hair,
+                Eyes = eyes,
+                Portrait = Portraits.StoredNameFor(exports, player.PlayerUID ?? ""),
             });
         }
         return players;
@@ -125,6 +176,48 @@ public static class Live
             });
         }
         return waypoints;
+    }
+
+    /// <summary>
+    /// The colours a player chose for themselves.
+    ///
+    /// Read from the applied skin parts, which are watched attributes and so are
+    /// known here without asking anyone. A part the game does not ship, or a mod
+    /// that renames one, simply yields nothing and the face is drawn without it.
+    /// </summary>
+    private static (string Skin, string Hair, string Eyes) Appearance(Entity? entity)
+    {
+        // `GetBehavior` reads through `SidedProperties` without checking it, and an
+        // entity has none until it has finished spawning. A player is at their
+        // least ready in the moment they join, which is exactly when this first
+        // runs for them — so the entity being there is not the same as it being
+        // ready to answer, and only this can tell the difference.
+        if (entity?.SidedProperties?.Behaviors is null)
+        {
+            return ("", "", "");
+        }
+
+        var skinnable = entity.GetBehavior<EntityBehaviorExtraSkinnable>();
+        if (skinnable?.AppliedSkinParts is null)
+        {
+            return ("", "", "");
+        }
+
+        string skin = "", hair = "", eyes = "";
+        foreach (var part in skinnable.AppliedSkinParts)
+        {
+            // `hairbase` is which hairstyle, not what colour it is; the colour is
+            // its own part. Reading the wrong one gives a name that is never in
+            // any colour table and a face that never draws.
+            switch (part?.PartCode)
+            {
+                case "baseskin": skin = part.Code ?? ""; break;
+                case "haircolor": hair = part.Code ?? ""; break;
+                case "eyecolor": eyes = part.Code ?? ""; break;
+            }
+        }
+
+        return (skin, hair, eyes);
     }
 
     /// <summary>

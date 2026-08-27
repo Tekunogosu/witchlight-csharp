@@ -37,6 +37,13 @@
       <HintPath>$(VintageStory)/Lib/protobuf-net.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- The one library the mod API has no substitute for: reading a rendered
+         picture back off the graphics card. Client only, which is why every use
+         of it stays inside a method body a server never calls. -->
+    <Reference Include="OpenTK.Graphics">
+      <HintPath>$(VintageStory)/Lib/OpenTK.Graphics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="SkiaSharp">
       <HintPath>$(VintageStory)/Lib/SkiaSharp.dll</HintPath>
       <Private>false</Private>

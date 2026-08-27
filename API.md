@@ -42,6 +42,9 @@ proxy in front of it before exposing it to the internet.
 | `GET /info.json` | what the map is and whether it has changed | see below |
 | `GET /tiles/{x}/{z}.png` | one tile, 256 blocks square at one pixel per block | PNG |
 | `GET /live.json` | who is online and every marker | see below |
+| `GET /icons.json` | the marker pictures that exist | JSON array of names |
+| `GET /skincolors.json` | what each skin part variant looks like | JSON object of name to `#rrggbb` |
+| `GET /icons/{name}.svg` | one marker picture | SVG |
 
 Tile coordinates may be negative, and one tile is exactly one terrain region.
 Tiles are rendered when first asked for and then kept, so starting costs nothing
@@ -78,7 +81,8 @@ the west and the one to the north. Those neighbours are in the list already.
 ### `GET /live.json`
 
 ```json
-{"Players":[{"Name":"ada","Uid":"...","X":511900,"Y":110,"Z":511901}],
+{"Players":[{"Name":"ada","Uid":"...","X":511900,"Y":110,"Z":511901,
+              "Portrait":"6164..."}],
  "Waypoints":[{"Title":"Forge","Icon":"circle","Color":"#00ff00",
                "X":511810,"Y":110,"Z":511810,"Owner":"ada",
                "OwnerUid":"...","Pinned":false}]}
@@ -93,6 +97,11 @@ Empty is empty. Nothing here reads a file this build does not write, so an empty
 `Waypoints` means the mod posted none — not that a stale file could not be found.
 
 `Color` is CSS; the game stores a packed integer and the mod converts it.
+
+`Portrait` is the name of a picture that player's own client sent, served at
+`/portraits/{Portrait}.png`, or absent where they have sent none. It is the uid in
+hex — a uid is base64 and carries `/` and `+`, which is a path rather than a name —
+and the mod decides it, so nothing else has to derive the same answer.
 
 ## The service, on its API socket
 
@@ -144,12 +153,27 @@ tick.
 All under `<data path>/mapstique`. The mod writes, the service reads, except
 where noted.
 
+Two live elsewhere, because they belong to the server rather than to the map:
+`<data path>/ModConfig/mapstique.conf` holds the service's settings and is written
+by the service itself, and `<data path>/Logs/mapstique-service.log` is everything
+the service prints while the mod is running it.
+
+Three settings in that file are read by the mod and never by the service, because
+they are about who runs the map rather than about how it is drawn: `autostart`,
+`announce`, and `announce_url`. The mod looks for them by name rather than parsing
+the file — the format has one owner and it is the service.
+
 | | Written | What it is |
 |---|---|---|
 | `palette.json` | at asset load, or when a client sends one | every block: id, average colour, which colour maps tint it |
 | `colormaps/*.png` | at asset load | the game's climate and season lookup images |
 | `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s | the surface of every chunk exported so far |
+| `icons/{name}.svg` | at asset load, or when a client sends them | the picture each marker is drawn with |
+| `skincolors.json` | when a client sends colours | what each skin part variant looks like |
+| `world.json` | once the world is ready, and on any export until it can be | where the world counts from, so coordinates match what a player reads in game |
 | `markers.json` | **by the service**, when markers arrive and differ | the last markers posted |
+| `portraits/{uid in hex}.png` | when a client sends one | a picture of that player's seraph, drawn on their own machine |
+| `service.json` | **by the service**, as it binds | the addresses the map answers on, the one worth giving somebody else first. Removed when the mod stops the service, so nothing hands a player the address of a map that is gone |
 
 The API socket is **not** here; it lives in `/tmp`, as above.
 
@@ -184,12 +208,41 @@ Registered on both sides. All three messages are protobuf.
 | | | |
 |---|---|---|
 | `SharedMarkers` | server → client, every 15s | every marker not belonging to the recipient, added to their in-game map as temporary waypoints |
+| `IconRequest` | server → one admin's client | asks for marker pictures, carrying the names it already has |
+| `IconTable` | client → server, sliced by size | the SVGs that client's assets can supply |
+| `SkinColorRequest` | server → one admin's client | asks what the skin part variants look like, carrying the names it has |
+| `SkinColorTable` | client → server | variant names and their colours |
+| `PortraitRequest` | server → one client | asks that player to draw themselves |
+| `PlayerPortrait` | client → server | a PNG of that player's own seraph, drawn on their machine |
 | `PaletteRequest` | server → one admin's client | asks for a block colour palette, carrying the fingerprint it must match |
 | `PaletteTable` | client → server, in slices of 8,000 blocks | the palette that client's assets can build |
 
 A `SharedMarker` carries a stable `Key` so a client can tell a new marker from
 one it already holds, and an `Owner` name but no uid: clients need to know whose
 a marker is, and identity is the server's business.
+
+**Coordinates.** Vintage Story shows every coordinate a player sees relative to
+world spawn, while the world is a million blocks across with spawn near the
+middle. `world.json` records where that is, so the map counts from the same place
+the player's own screen does. Absolute positions remain what region files and tile
+URLs use, and are a setting in the viewer.
+
+Spawn is not known while mods are starting, so the file is written once the world
+is ready rather than at start. It is absent rather than wrong when spawn cannot be
+read: a file saying spawn is the origin reads exactly like a world whose spawn is
+the origin, and the map service says out loud that it is counting from absolute
+zero when the file is missing.
+
+**Appearance.** A player's applied skin parts are readable server side, but only
+as names: a variant carries a texture and no colour, and the game works the colour
+out on the client by sampling the texture. So the names travel with the player and
+the name-to-colour table is asked of an admin once.
+
+The marker pictures travel for a harder version of the same reason: a dedicated
+server's install contains **no SVG at all**, so unlike the palette this is not a
+fallback for a poor result but the only way they ever arrive. An icon name becomes
+a filename and then a URL path, and it comes from whatever mods are installed, so
+it is reduced to `[a-z0-9_-]` on the way in and checked again on the way out.
 
 The palette travels because a dedicated server's own assets are nearly empty of
 block textures, which is the usual reason a map renders blank. Only an admin is
@@ -201,13 +254,33 @@ together produce a palette neither could alone.
 
 ### Chat commands
 
+**The prefix says which side runs it.** The game gives server commands `/` and
+client commands `.`, and they are separate registries — `/mapstique palette` asks
+the server to request a palette from an admin, while `.mapstique palette` is that
+admin's own client building one and sending it unprompted. The server side is the
+one to reach for; the client side exists for sending something without being
+asked.
+
 All require the `controlserver` privilege.
 
 | | |
 |---|---|
 | `/mapstique export` | read every loaded chunk again, whatever the server thinks moved — the way back if the map and the world disagree |
-| `/mapstique status` | where the exports are, where the palette came from, how much terrain is stored, and how many columns are waiting |
+| `/mapstique status` | where the exports are, where the palette came from, how much terrain is stored, where the world counts from, whether the map service is up, and how many columns are waiting |
+| `/mapstique portrait [player]` | ask a player's client for a picture of their character |
+| `/mapstique service [status\|start\|stop]` | the map service the mod runs. `start` ignores `autostart`, which only decides what happens unasked |
 | `/mapstique palette [player]` | ask an admin's client for a palette now, rather than waiting for the next one to join |
+| `/mapstique icons [player]` | ask an admin's client for every marker picture again |
+| `/mapstique colors [player]` | ask an admin's client what the skin part variants look like |
+
+On a client, with a dot rather than a slash:
+
+| | |
+|---|---|
+| `.mapstique portrait` | draw your character and send the picture |
+| `.mapstique palette` | build a block palette and send it |
+| `.mapstique icons` | send the marker pictures |
+| `.mapstique colors` | send what the skin part variants look like |
 
 `status` is the first thing to look at when the map looks wrong. `palette: from
 server` against `from client` says which machine's assets the colours came from,

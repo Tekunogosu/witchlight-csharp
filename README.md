@@ -11,6 +11,13 @@ Vintage Story update can only ever break this half.
 Every interface between the two — files, sockets, HTTP, game packets, commands —
 is written up in **[API.md](API.md)**.
 
+Three things a dedicated server cannot supply are asked of an admin's client, for
+the same underlying reason: its install ships almost no images. The **block
+palette** decides what terrain looks like, the **marker pictures** are SVGs it has
+none of, and the **skin part colours** are worked out by sampling textures it does
+not have. Each is asked separately, merged across admins, and stored so it is
+asked once rather than per player or per join.
+
 Versions track the [map service](../rust/mapstique) and **must match on minor
 version**. A format change clears the map while Mapstique is alpha — see
 [CHANGELOG.md](CHANGELOG.md).
@@ -26,8 +33,11 @@ worthless by the time a disk has finished with it.
 | every block: id, average colour, tint maps | `palette.json` | at asset load, or when a client sends one |
 | the game's climate and season lookup images | `colormaps/*.png` | at asset load |
 | the surface of every chunk exported so far | `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s |
-| who is online and where | posted to the service | every 2s |
+| who is online, where, their health and food, and the names of the skin parts they wear | posted to the service | every 2s |
 | every marker | posted to the service | every 15s, when they differ from the last post |
+| the picture each marker is drawn with | `icons/{name}.svg` | at asset load, or when a client sends them |
+| what each skin part variant looks like | `skincolors.json` | when a client sends them |
+| where the world counts from | `world.json` | at start |
 
 The files land in `<data path>/mapstique`. The service listens for posts on its
 API socket — a unix socket in `/tmp`, named after that directory so both sides
@@ -69,6 +79,77 @@ is the way back if the map and the world ever disagree.
 
 It also pushes every player the markers belonging to everyone else, and adds them
 to their in-game map as temporary waypoints.
+
+## The map service
+
+The renderer is a separate program and stays one: this half knows the game, that
+half knows pixels, and a map worth keeping outlives any single game server. It is
+not, however, a second thing to install. A Linux x64 build rides along inside this
+archive, is unpacked to the game's `Cache` folder on first run, and is started
+once the world is ready.
+
+Its settings are `mapstique.conf` in the game's `ModConfig` folder, written by the
+service itself on a first run — the format has one owner and this half does not
+write it. Every option is editable there, including:
+
+```toml
+# Whether the server mod runs this service itself.
+autostart = true
+```
+
+Turn `autostart` off to run `mapstique serve` by hand instead, which is what a map
+that should stay up while the game server is down wants. `/mapstique service start`
+still runs it on demand.
+
+Where the map ended up listening goes in the server's own log as it comes up:
+
+```
+[mapstique] the map is being served at http://192.168.1.145:8080
+```
+
+The service works that out — `0.0.0.0` is not something anyone can type into a
+browser — and writes it to `service.json` beside the export, which is where both
+that line and the message below get it from.
+
+### Telling players where it is
+
+A player is told where the map is as they join, which two settings govern:
+
+```toml
+announce = true          # say it at all
+announce_url = ""        # empty: wherever the service says it is listening
+```
+
+Set `announce_url` on any server a player cannot reach directly. The address the
+service works out is the one its own machine can see, which on a server behind a
+proxy, a domain or NAT is not the address anybody types — only an operator knows
+that one:
+
+```toml
+announce_url = "https://map.example.com"
+```
+
+Both are read at each join, so turning the message off takes effect on the next
+one rather than on the next restart. Nothing is said when there is no address to
+give: a service that is not running, one somebody else runs somewhere this cannot
+see, or a server whose real address its operator has not said.
+
+Everything the service prints goes to `Logs/mapstique-service.log`, on its own so
+it can be tailed while it runs:
+
+```sh
+tail -f VintagestoryData/Logs/mapstique-service.log
+```
+
+The service is stopped with the game server, which is safe to do outright:
+everything it writes is put beside itself and renamed into place, so there is no
+half written file to catch it in the middle of. A service that stops on its own is
+reported and left stopped — one that will not start fails the same way every time,
+and a restart loop turns one legible error into a log nobody can read.
+
+On a machine the archive carries no build for — another platform, or a client
+archive handed to a server — the mod says which file and which path, then carries
+on exporting; a service run by hand serves the map as before.
 
 ## Where the palette comes from
 
@@ -137,9 +218,27 @@ All under `/mapstique`, requiring `controlserver`.
 
 | | |
 |---|---|
-| `status` | where exports live, which source the palette came from, its coverage and fingerprint, whether that fingerprint is stale, and when terrain was last written |
+| `status` | where exports live, which source the palette came from, its coverage and fingerprint, whether that fingerprint is stale, where the world counts from, whether the map service is up, and when terrain was last written |
+| `service [status\|start\|stop]` | the map service this mod runs. `start` runs it whatever `autostart` says, because somebody typing the command has asked |
 | `palette [player]` | ask an online admin for a palette now, rather than waiting for the next join |
+| `icons [player]` | ask an online admin for every marker picture again |
+| `colors [player]` | ask an online admin what the skin part variants look like |
 | `export` | write the surface of every loaded chunk immediately |
+
+| `portrait [player]` | ask a player's client for a picture of their character |
+
+Only that player's own machine can draw it — nobody else's has their seraph loaded
+— so the server asks and the picture comes back. The map then shows it in their
+card in place of a face assembled from three colours.
+
+**A dot, not a slash, on a client.** The game keeps client and server commands in
+separate registries and gives them different prefixes, so `.mapstique portrait`
+is the client drawing itself unprompted while `/mapstique portrait` is the server
+asking it to. The same holds for `palette`, `icons` and `colors`, which exist on
+both sides for that reason.
+
+Everything under `/mapstique` requires `controlserver`. Subcommands inherit it from
+the root, which is how the game resolves a privilege down a command tree.
 
 `/mapstique status` is the first thing to look at when the map looks wrong: it
 says whether the palette is the server's own poor one or a good one from a client.
@@ -202,19 +301,37 @@ Needs the .NET 10 SDK and a Vintage Story install. The game directory is taken
 from `$VINTAGE_STORY`, falling back to `~/.local/share/vintagestory`.
 
 ```sh
-./package.sh                     # build, then dist/mapstique_<version>.zip
+./package.sh                     # a server archive: dist/mapstique_<version>.zip
+./package.sh --target client     # without the service: ..._<version>_client.zip
 ./package.sh --install ~/.config/VintagestoryData/Mods    # and drop it in place
 ./package.sh --no-build          # repackage what was built last
+./package.sh --service FILE      # use this map service binary
+./package.sh --no-service        # a server archive without one
 ```
 
-The archive holds `modinfo.json` and `Mapstique.dll` at its root, named
+One assembly, two archives. The mod runs on both sides and decides for itself
+which half to start, so the code is identical either way; what differs is that a
+server is handed the map service and a client has no use for a megabyte of it —
+42 KiB against 971. The client archive carries `_client` in its name so that both
+can sit in `dist/` at once rather than one quietly overwriting the other.
+
+The map service is looked for in `/var/tmp/rust-target/release/mapstique` and
+`../rust/mapstique/target/release/mapstique`, or wherever `$MAPSTIQUE_SERVICE`
+says. Packaging **stops** when there is none, rather than quietly producing a mod
+that exports a map it cannot serve; `--no-service` is how to mean it.
+
+The archive holds `modinfo.json` and `Mapstique.dll` at its root, plus the map
+service under `service/linux-x64/` on a server build, named
 `<modid>_<version>.zip` — the layout the mod database expects on upload, and the
 same file a server can be handed directly. `modinfo.json` is the only place the
 version lives. A `modicon.png` or an `assets/` directory beside the project is
 picked up automatically if you add one.
 
 Install it on the server **and on clients**: the server half exports and shares,
-the client half draws other players' markers and supplies palettes. Mods load at
+the client half draws other players' markers and supplies palettes. Hand the
+server archive to a server and the client one to players — a client given the
+server archive works exactly the same, it has just carried a map service it will
+never run. Mods load at
 startup, so deploying means restarting.
 
 ## Known gaps

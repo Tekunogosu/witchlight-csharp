@@ -4,9 +4,19 @@
 # at the root of a zip named <modid>_<version>.zip. That is the layout the mod
 # database expects on upload, and the same file a server can be handed directly.
 #
-#   ./package.sh                        build and package into dist/
+# One assembly, two archives. The mod runs on both sides and decides for itself
+# which half to start, so the code is the same either way; what differs is that a
+# server is handed the map service and a client has no use for a megabyte of it.
+#
+#   ./package.sh                        a server archive, into dist/
+#   ./package.sh --target client        the same mod without the map service
 #   ./package.sh --install DIR          also copy it into a Mods folder
 #   ./package.sh --no-build             package whatever was built last
+#   ./package.sh --service FILE         use this map service binary
+#   ./package.sh --no-service           a server archive without one
+#
+# The client archive is named <modid>_<version>_client.zip so that both can sit in
+# dist/ at once rather than one quietly overwriting the other.
 #
 set -euo pipefail
 
@@ -16,16 +26,41 @@ modinfo="$project/modinfo.json"
 out="$here/dist"
 build=1
 install_to=""
+service="${MAPSTIQUE_SERVICE:-}"
+want_service=1
+target=server
+
+# Where a release build of the map service usually lands. Named here rather than
+# guessed at from the mod's own layout, so that a machine keeping its Rust output
+# somewhere else needs one flag and not a rearrangement.
+service_candidates=(
+    "/var/tmp/rust-target/release/mapstique"
+    "$here/../rust/mapstique/target/release/mapstique"
+)
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --install) install_to="${2:?--install needs a directory}"; shift 2 ;;
         --out)     out="${2:?--out needs a directory}"; shift 2 ;;
         --no-build) build=0; shift ;;
-        -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --service) service="${2:?--service needs a file}"; shift 2 ;;
+        --no-service) want_service=0; shift ;;
+        --target)  target="${2:?--target needs client or server}"; shift 2 ;;
+        # Everything the header says, however long it grows: a line range here
+        # goes stale the first time a flag is added and says nothing about it.
+        -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' \
+                       "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "package: unknown argument $1" >&2; exit 2 ;;
     esac
 done
+
+case "$target" in
+    server) ;;
+    # A client has nothing to serve. Stated here rather than by the caller also
+    # remembering --no-service, so that --target is the whole of the decision.
+    client) want_service=0 ;;
+    *) echo "package: --target takes client or server, not $target" >&2; exit 2 ;;
+esac
 
 # The mod's own metadata is the single source of truth for what this is called.
 modid=$(jq -r '.modid' "$modinfo")
@@ -55,21 +90,51 @@ assembly="$release/Mapstique.dll"
     exit 1
 }
 
+# A mod that cannot start the map is the thing this is meant to prevent, so a
+# missing service stops the packaging rather than shipping quietly without one.
+if [ "$want_service" -eq 1 ] && [ -z "$service" ]; then
+    for candidate in "${service_candidates[@]}"; do
+        [ -f "$candidate" ] && { service="$candidate"; break; }
+    done
+fi
+
+if [ "$want_service" -eq 1 ] && [ ! -f "$service" ]; then
+    echo "package: no map service binary found. Build it with" >&2
+    echo "  cargo build --release   (in the mapstique service repository)" >&2
+    echo "or name one with --service FILE, or package without it with --no-service." >&2
+    echo "Looked in:" >&2
+    printf '  %s\n' "${service_candidates[@]}" >&2
+    exit 1
+fi
+
+[ "$want_service" -eq 1 ] || service=""
+
 mkdir -p "$out"
-archive="$out/${modid}_${version}.zip"
+suffix=""
+[ "$target" = "client" ] && suffix="_client"
+archive="$out/${modid}_${version}${suffix}.zip"
 
 # Everything the game reads, at the root of the zip. Optional pieces are included
 # when they exist so adding an icon or assets later needs no change here.
-python3 - "$archive" "$modinfo" "$assembly" "$project" <<'PY'
+python3 - "$archive" "$modinfo" "$assembly" "$project" "$service" <<'PY'
 import pathlib, sys, zipfile
 
 archive, modinfo, assembly, project = (pathlib.Path(p) for p in sys.argv[1:5])
+service = sys.argv[5]
 included = []
+
+# Where the mod looks for it. One platform for now; a second is a second entry
+# under service/ and the mod picking the one that matches the machine.
+SERVICE_AT = "service/linux-x64/mapstique"
 
 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
     for path in (modinfo, assembly):
         zip_file.write(path, path.name)
         included.append(path.name)
+
+    if service:
+        zip_file.write(service, SERVICE_AT)
+        included.append(SERVICE_AT)
 
     icon = project / "modicon.png"
     if icon.exists():
@@ -87,7 +152,7 @@ print("\n".join(f"  {name}" for name in included))
 PY
 
 size=$(stat -c%s "$archive")
-echo "packaged $modid $version ($side), $((size / 1024)) KiB"
+echo "packaged $modid $version for a $target ($side), $((size / 1024)) KiB"
 echo "  $archive"
 
 if [ -n "$install_to" ]; then
