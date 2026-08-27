@@ -33,20 +33,16 @@ public class MapstiqueSystem : ModSystem
             .RegisterMessageType<PaletteTable>()
             .RegisterMessageType<IconRequest>()
             .RegisterMessageType<IconTable>()
-            .RegisterMessageType<SkinColorRequest>()
-            .RegisterMessageType<SkinColorTable>()
             .RegisterMessageType<PortraitRequest>()
             .RegisterMessageType<PlayerPortrait>()
             .SetMessageHandler<PaletteTable>(OnPaletteFromClient)
             .SetMessageHandler<IconTable>(OnIconsFromClient)
-            .SetMessageHandler<SkinColorTable>(OnSkinColorsFromClient)
             .SetMessageHandler<PlayerPortrait>(OnPortraitFromClient);
         api.Event.PlayerNowPlaying += player => Safely("greeting a player", () =>
         {
             SharedServer.SendTo(api, player);
             AskForPalette(player);
             AskForIcons(player);
-            AskForSkinColors(player);
             SayWhereTheMapIs(player);
         });
         _service = new MapService(ExportDir, api.Logger);
@@ -404,32 +400,6 @@ public class MapstiqueSystem : ModSystem
         return file.Exists ? file.Length : 0;
     }
 
-    /// <summary>
-    /// Whether the colours a player chose can actually be read.
-    ///
-    /// A player drawn as a plain initial on the map looks the same whether the
-    /// colours were unreadable or the map is simply old, so the answer is stated
-    /// here rather than inferred from the far end.
-    /// </summary>
-    private string Readable()
-    {
-        if (_sapi is null)
-        {
-            return "server not ready";
-        }
-
-        var online = Live.Players(_sapi, ExportDir);
-        if (online.Count == 0)
-        {
-            return "nobody online to read";
-        }
-
-        var known = online.Count(p => p.Skin.Length > 0);
-        var colours = SkinColors.Count(ExportDir);
-        return $"{known} of {online.Count} players named their parts, "
-            + $"{colours} colours known for drawing them";
-    }
-
     /// <summary>How many marker icons are on disk for the map service to draw with.</summary>
     private static int IconCount()
     {
@@ -579,7 +549,6 @@ public class MapstiqueSystem : ModSystem
             $"markers: {Live.Waypoints(_sapi).Count} saved on this server",
             $"icons: {IconCount()} for drawing them",
             $"portraits: {Portraits.Count(ExportDir)} sent by players",
-            $"appearance: {Readable()}",
             $"players out: {_service?.PlayersHealth ?? "not started"}",
             $"markers out: {_service?.MarkersHealth ?? "not started"}",
             $"waiting: {_dirty.Count} columns changed since then",
@@ -699,18 +668,6 @@ public class MapstiqueSystem : ModSystem
             .SendPacket(new IconRequest { Have = IconNames() }, player);
     }
 
-    /// <summary>Asks one admin what the skin part variants look like.</summary>
-    private void AskForSkinColors(IServerPlayer player)
-    {
-        if (_sapi is null || !player.HasPrivilege(Privilege.controlserver))
-        {
-            return;
-        }
-
-        _sapi.Network.GetChannel(SharedServer.Channel)
-            .SendPacket(new SkinColorRequest { Have = SkinColors.Known(ExportDir) }, player);
-    }
-
     /// <summary>
     /// Takes a player's picture of themselves.
     ///
@@ -740,36 +697,6 @@ public class MapstiqueSystem : ModSystem
         {
             _sapi.Logger.Warning(
                 "[mapstique] ignored a portrait from {0}: {1}", player.PlayerName, said);
-        }
-    }
-
-    private void OnSkinColorsFromClient(IServerPlayer player, SkinColorTable table)
-    {
-        if (_sapi is null)
-        {
-            return;
-        }
-
-        if (!player.HasPrivilege(Privilege.controlserver))
-        {
-            _sapi.Logger.Warning(
-                "[mapstique] ignored skin colours from {0}, who is not an admin", player.PlayerName);
-            return;
-        }
-
-        var pairs = new List<(string, string)>();
-        var count = System.Math.Min(table.Names?.Count ?? 0, table.Colors?.Count ?? 0);
-        for (var at = 0; at < count; at++)
-        {
-            pairs.Add((table.Names![at], table.Colors![at]));
-        }
-
-        var added = SkinColors.Accept(pairs, ExportDir);
-        if (added > 0)
-        {
-            _sapi.Logger.Notification(
-                "[mapstique] {0} skin part colours from {1} ({2} known now)",
-                added, player.PlayerName, SkinColors.Count(ExportDir));
         }
     }
 

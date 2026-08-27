@@ -36,7 +36,7 @@ public sealed class PortraitCapture : IRenderer
     /// this can know exactly, so it is given room to land anywhere and the picture
     /// is cut from wherever it did.
     /// </summary>
-    private const int Canvas = 512;
+    private const int Canvas = 640;
 
     /// <summary>
     /// Where the seraph stands in the canvas, how tall, and how far back.
@@ -49,7 +49,7 @@ public sealed class PortraitCapture : IRenderer
     /// </summary>
     private const double Origin = Canvas / 8.0;
 
-    private const double HeadRoom = 30;
+    private const double HeadRoom = 80;
 
     private const double Depth = 250;
 
@@ -68,8 +68,15 @@ public sealed class PortraitCapture : IRenderer
     /// </summary>
     private const float Facing = -1.5707963f;
 
-    /// <summary>How much empty room to leave around the figure.</summary>
-    private const int Margin = 8;
+    /// <summary>
+    /// How much of a seraph, measured from the crown down, is its head.
+    ///
+    /// Three tenths, chosen by cutting a real one at several fractions and looking
+    /// at the results: a quarter clips the jaw, a third gives away half the square
+    /// to shoulder. This is the whole of the difference between a portrait and a
+    /// photograph of somebody's coat.
+    /// </summary>
+    private const double HeadShare = 0.30;
 
     /// <summary>
     /// Where the light comes from: over the viewer's left shoulder.
@@ -265,25 +272,48 @@ public sealed class PortraitCapture : IRenderer
             return null;
         }
 
-        // The whole figure, squared so that nothing is stretched, with a little air
-        // around it. Cutting to the head is a decision better made from a picture
-        // of the whole seraph than from arithmetic about where a head ought to be.
         var width = right - left + 1;
         var height = bottom - top + 1;
-        // Centred on the figure, and allowed to run off the canvas to stay that way.
-        // Clamping the square back inside kept every pixel of it real and put the
-        // seraph off to one side, which is worse: what is outside the canvas is
-        // nothing, and nothing is exactly what should be around a portrait.
-        var side = System.Math.Max(width, height) + Margin * 2;
-        var x0 = (left + right) / 2 - side / 2;
-        var y0 = (top + bottom) / 2 - side / 2;
+
+        // The head, which is the top of the figure: the first row drawn is the
+        // crown, since the entity renderer turns the model half a turn about X and
+        // this reads the rows back in the order they are stored.
+        var band = System.Math.Max(1, (int)(height * HeadShare));
+        var (headLeft, headRight) = ColumnsIn(bgra, top, top + band);
+
+        // Centred on the head's own columns rather than the figure's. A seraph in a
+        // coat is wider at the shoulder than at the ear, and centring on the whole
+        // of it walks the face off to one side.
+        var side = band;
+        var x0 = (headLeft + headRight) / 2 - side / 2;
+        var y0 = top - band / 12;
 
         // A figure touching an edge was cut off by it, and what is cropped from it
         // is a piece of a seraph rather than a small one. Worth saying: the
         // difference is invisible in the picture and decides where to look.
         var against = Edges(left, right, top, bottom);
-        said = $"{width}x{height} found at {left},{top}, framed {side}x{side}{against}";
+        said = $"{width}x{height} found at {left},{top}, head {side}x{side} at {x0},{y0}{against}";
         return Encode(bgra, x0, y0, side);
+    }
+
+    /// <summary>How far left and right anything is drawn between two rows.</summary>
+    private static (int Left, int Right) ColumnsIn(byte[] bgra, int from, int upto)
+    {
+        int left = Canvas, right = -1;
+        for (var y = System.Math.Max(0, from); y < System.Math.Min(Canvas, upto); y++)
+        {
+            for (var x = 0; x < Canvas; x++)
+            {
+                if (bgra[(y * Canvas + x) * 4 + 3] == 0)
+                {
+                    continue;
+                }
+                if (x < left) left = x;
+                if (x > right) right = x;
+            }
+        }
+
+        return right < 0 ? (0, Canvas - 1) : (left, right);
     }
 
     /// <summary>Which sides of the canvas the figure ran off, if any.</summary>
@@ -292,8 +322,8 @@ public sealed class PortraitCapture : IRenderer
         var against = new System.Collections.Generic.List<string>();
         if (left == 0) against.Add("left");
         if (right == Canvas - 1) against.Add("right");
-        if (top == 0) against.Add("bottom");
-        if (bottom == Canvas - 1) against.Add("top");
+        if (top == 0) against.Add("top");
+        if (bottom == Canvas - 1) against.Add("bottom");
         return against.Count == 0 ? "" : $", CUT OFF at the {string.Join(" and ", against)}";
     }
 

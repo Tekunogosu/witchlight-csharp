@@ -37,14 +37,11 @@ public class MapstiqueClient : ModSystem
             .RegisterMessageType<PaletteTable>()
             .RegisterMessageType<IconRequest>()
             .RegisterMessageType<IconTable>()
-            .RegisterMessageType<SkinColorRequest>()
-            .RegisterMessageType<SkinColorTable>()
             .RegisterMessageType<PortraitRequest>()
             .RegisterMessageType<PlayerPortrait>()
             .SetMessageHandler<SharedMarkers>(OnMarkers)
             .SetMessageHandler<PaletteRequest>(OnPaletteRequest)
             .SetMessageHandler<IconRequest>(OnIconRequest)
-            .SetMessageHandler<SkinColorRequest>(OnSkinColorRequest)
             .SetMessageHandler<PortraitRequest>(OnPortraitRequest);
 
         _portrait = new PortraitCapture(api);
@@ -59,10 +56,6 @@ public class MapstiqueClient : ModSystem
             .BeginSubCommand("palette")
             .WithDescription("Build the block colour palette for the server you are on")
             .HandleWith(OnPalette)
-            .EndSubCommand()
-            .BeginSubCommand("colors")
-            .WithDescription("Send the skin part colours to the server you are on")
-            .HandleWith(OnColors)
             .EndSubCommand()
             .BeginSubCommand("icons")
             .WithDescription("Send the marker pictures to the server you are on")
@@ -157,64 +150,6 @@ public class MapstiqueClient : ModSystem
 
     /// <summary>Draws this player when asked. Only a client can: nobody else has them.</summary>
     private PortraitCapture? _portrait;
-
-    private void OnSkinColorRequest(SkinColorRequest request)
-    {
-        SendColors(new HashSet<string>(request.Have ?? new List<string>()), quiet: true);
-    }
-
-    private TextCommandResult OnColors(TextCommandCallingArgs args)
-    {
-        var sent = SendColors(new HashSet<string>(), quiet: false);
-        return sent > 0
-            ? TextCommandResult.Success($"sent {sent} skin part colours")
-            : TextCommandResult.Error("this client could not work out any skin part colours");
-    }
-
-    private int SendColors(HashSet<string> already, bool quiet)
-    {
-        var skinnable = _capi?.World?.Player?.Entity?.GetBehavior<EntityBehaviorExtraSkinnable>();
-        if (_capi is null || skinnable?.AvailableSkinParts is null)
-        {
-            return 0;
-        }
-
-        var table = new SkinColorTable();
-        foreach (var part in skinnable.AvailableSkinParts)
-        {
-            if (part?.Variants is null)
-            {
-                continue;
-            }
-
-            foreach (var variant in part.Variants)
-            {
-                // Zero means the game could not read a texture for it either.
-                if (variant?.Code is null || variant.Color == 0 || already.Contains(variant.Code))
-                {
-                    continue;
-                }
-
-                // The game packs these the way it packs a waypoint's colour.
-                var hex = $"#{variant.Color & 0xff:x2}{(variant.Color >> 8) & 0xff:x2}{(variant.Color >> 16) & 0xff:x2}";
-                table.Names.Add(variant.Code);
-                table.Colors.Add(hex);
-            }
-        }
-
-        if (table.Names.Count == 0)
-        {
-            return 0;
-        }
-
-        _capi.Network.GetChannel(SharedServer.Channel).SendPacket(table);
-        _capi.Logger.Notification("[mapstique] sent {0} skin part colours", table.Names.Count);
-        if (!quiet)
-        {
-            _capi.ShowChatMessage($"Mapstique: sent {table.Names.Count} skin part colours");
-        }
-        return table.Names.Count;
-    }
 
     /// <summary>
     /// Sends the marker pictures, because the server asked.

@@ -6,7 +6,7 @@
     "theysa"
   ],
   "description": "Exports map data for the Mapstique map server, and shares every player's map markers with everyone on the server.",
-  "version": "0.15.8",
+  "version": "0.16.0",
   "side": "universal",
   "requiredOnClient": false,
   "dependencies": {}

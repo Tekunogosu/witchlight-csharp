@@ -8,6 +8,37 @@ While Mapstique is alpha, a format change **clears the map** on start rather tha
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.16.0
+
+### The portrait is a face, and the old one is gone
+
+A portrait is cut to the head now. Three tenths of the figure measured down from
+the crown, squared, and centred on the head's own columns rather than the figure's
+— a seraph in a coat is wider at the shoulder than at the ear, and centring on all
+of it walks the face off to one side. The fraction was chosen by cutting a real
+seraph at several and looking at the results.
+
+Everything that drew the old face is removed: `SkinColors`, the two packets that
+carried the table, the `colors` command on both sides, the appearance fields on a
+live player, and the sampling that filled them. A player with no picture shows
+their initial.
+
+That whole mechanism was a good answer to a question that turned out to have a
+better one. It read the names of the skin parts a player wore, asked an admin's
+client what colour each name was, and drew a face from three of them. It worked,
+and it looked like what it was.
+
+### Fixed
+
+The canvas reported which edge a figure ran off, and named the wrong one. Row zero
+is the top of the picture, since the rows are read back in the order they are kept
+and never reversed — so a figure against the last row is cut off at its feet, not
+its crown. It said the opposite, which is the sort of thing that sends the next fix
+in exactly the wrong direction.
+
+The canvas is larger and the seraph stands further down it, so a whole one fits
+with room to spare.
+
 ## 0.15.8
 
 ### The seraph looks straight at you, level, in the middle

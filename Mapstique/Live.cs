@@ -40,19 +40,6 @@ public class LivePlayer
     public float Saturation { get; set; }
     public float MaxSaturation { get; set; }
 
-    /// <summary>
-    /// What this player looks like, as the names of the parts they chose.
-    ///
-    /// Names, not colours. A skin part's colour is not written down anywhere the
-    /// server can see: the definitions give each variant a texture and no colour
-    /// at all, and the textures are images a dedicated server does not ship. What
-    /// it does have is which variant each player applied — `skin4`, `mossgreen`,
-    /// `azure` — and the colour for a variant is the same for everyone, so it is
-    /// looked up once rather than asked per player.
-    /// </summary>
-    public string Skin { get; set; } = "";
-    public string Hair { get; set; } = "";
-    public string Eyes { get; set; } = "";
 }
 
 /// <summary>One map marker, as its owner placed it.</summary>
@@ -111,7 +98,6 @@ public static class Live
                 continue;
             }
 
-            var (skin, hair, eyes) = Appearance(player.Entity);
             var watched = player.Entity.WatchedAttributes;
             var health = watched?.GetTreeAttribute("health");
             var hunger = watched?.GetTreeAttribute("hunger");
@@ -127,9 +113,6 @@ public static class Live
                 MaxHealth = health?.GetFloat("maxhealth") ?? 0f,
                 Saturation = hunger?.GetFloat("currentsaturation") ?? 0f,
                 MaxSaturation = hunger?.GetFloat("maxsaturation") ?? 0f,
-                Skin = skin,
-                Hair = hair,
-                Eyes = eyes,
                 Portrait = Portraits.StoredNameFor(exports, player.PlayerUID ?? ""),
             });
         }
@@ -185,40 +168,6 @@ public static class Live
     /// known here without asking anyone. A part the game does not ship, or a mod
     /// that renames one, simply yields nothing and the face is drawn without it.
     /// </summary>
-    private static (string Skin, string Hair, string Eyes) Appearance(Entity? entity)
-    {
-        // `GetBehavior` reads through `SidedProperties` without checking it, and an
-        // entity has none until it has finished spawning. A player is at their
-        // least ready in the moment they join, which is exactly when this first
-        // runs for them — so the entity being there is not the same as it being
-        // ready to answer, and only this can tell the difference.
-        if (entity?.SidedProperties?.Behaviors is null)
-        {
-            return ("", "", "");
-        }
-
-        var skinnable = entity.GetBehavior<EntityBehaviorExtraSkinnable>();
-        if (skinnable?.AppliedSkinParts is null)
-        {
-            return ("", "", "");
-        }
-
-        string skin = "", hair = "", eyes = "";
-        foreach (var part in skinnable.AppliedSkinParts)
-        {
-            // `hairbase` is which hairstyle, not what colour it is; the colour is
-            // its own part. Reading the wrong one gives a name that is never in
-            // any colour table and a face that never draws.
-            switch (part?.PartCode)
-            {
-                case "baseskin": skin = part.Code ?? ""; break;
-                case "haircolor": hair = part.Code ?? ""; break;
-                case "eyecolor": eyes = part.Code ?? ""; break;
-            }
-        }
-
-        return (skin, hair, eyes);
-    }
 
     /// <summary>
     /// Who owns a marker. Offline owners are looked up in the player data, so a

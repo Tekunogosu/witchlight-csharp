@@ -11,12 +11,13 @@ Vintage Story update can only ever break this half.
 Every interface between the two — files, sockets, HTTP, game packets, commands —
 is written up in **[API.md](API.md)**.
 
-Three things a dedicated server cannot supply are asked of an admin's client, for
-the same underlying reason: its install ships almost no images. The **block
-palette** decides what terrain looks like, the **marker pictures** are SVGs it has
-none of, and the **skin part colours** are worked out by sampling textures it does
-not have. Each is asked separately, merged across admins, and stored so it is
-asked once rather than per player or per join.
+Three things a dedicated server cannot supply come from a client, for the same
+underlying reason: its install ships almost no images. The **block palette**
+decides what terrain looks like and the **marker pictures** are SVGs it has none
+of; both are asked of an admin, merged across admins, and stored so they are asked
+once rather than per join. A **portrait** is the third and is different in kind:
+what a seraph looks like exists only where it is rendered, so a player's own client
+draws one and sends the picture.
 
 Versions track the [map service](../rust/mapstique) and **must match on minor
 version**. A format change clears the map while Mapstique is alpha — see
@@ -33,10 +34,10 @@ worthless by the time a disk has finished with it.
 | every block: id, average colour, tint maps | `palette.json` | at asset load, or when a client sends one |
 | the game's climate and season lookup images | `colormaps/*.png` | at asset load |
 | the surface of every chunk exported so far | `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s |
-| who is online, where, their health and food, and the names of the skin parts they wear | posted to the service | every 2s |
+| who is online, where, their health and food, and which portrait is theirs | posted to the service | every 2s |
 | every marker | posted to the service | every 15s, when they differ from the last post |
 | the picture each marker is drawn with | `icons/{name}.svg` | at asset load, or when a client sends them |
-| what each skin part variant looks like | `skincolors.json` | when a client sends them |
+| a picture of a player's seraph | `portraits/{uid in hex}.png` | when their client sends one |
 | where the world counts from | `world.json` | at start |
 
 The files land in `<data path>/mapstique`. The service listens for posts on its
@@ -222,7 +223,6 @@ All under `/mapstique`, requiring `controlserver`.
 | `service [status\|start\|stop]` | the map service this mod runs. `start` runs it whatever `autostart` says, because somebody typing the command has asked |
 | `palette [player]` | ask an online admin for a palette now, rather than waiting for the next join |
 | `icons [player]` | ask an online admin for every marker picture again |
-| `colors [player]` | ask an online admin what the skin part variants look like |
 | `export` | write the surface of every loaded chunk immediately |
 
 | `portrait [player]` | ask a player's client for a picture of their character |
@@ -234,7 +234,7 @@ card in place of a face assembled from three colours.
 **A dot, not a slash, on a client.** The game keeps client and server commands in
 separate registries and gives them different prefixes, so `.mapstique portrait`
 is the client drawing itself unprompted while `/mapstique portrait` is the server
-asking it to. The same holds for `palette`, `icons` and `colors`, which exist on
+asking it to. The same holds for `palette` and `icons`, which exist on
 both sides for that reason.
 
 Everything under `/mapstique` requires `controlserver`. Subcommands inherit it from

@@ -43,8 +43,8 @@ proxy in front of it before exposing it to the internet.
 | `GET /tiles/{x}/{z}.png` | one tile, 256 blocks square at one pixel per block | PNG |
 | `GET /live.json` | who is online and every marker | see below |
 | `GET /icons.json` | the marker pictures that exist | JSON array of names |
-| `GET /skincolors.json` | what each skin part variant looks like | JSON object of name to `#rrggbb` |
 | `GET /icons/{name}.svg` | one marker picture | SVG |
+| `GET /portraits/{name}.png` | a picture a player's client drew of their seraph | PNG |
 
 Tile coordinates may be negative, and one tile is exactly one terrain region.
 Tiles are rendered when first asked for and then kept, so starting costs nothing
@@ -169,7 +169,6 @@ the file — the format has one owner and it is the service.
 | `colormaps/*.png` | at asset load | the game's climate and season lookup images |
 | `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s | the surface of every chunk exported so far |
 | `icons/{name}.svg` | at asset load, or when a client sends them | the picture each marker is drawn with |
-| `skincolors.json` | when a client sends colours | what each skin part variant looks like |
 | `world.json` | once the world is ready, and on any export until it can be | where the world counts from, so coordinates match what a player reads in game |
 | `markers.json` | **by the service**, when markers arrive and differ | the last markers posted |
 | `portraits/{uid in hex}.png` | when a client sends one | a picture of that player's seraph, drawn on their own machine |
@@ -210,8 +209,6 @@ Registered on both sides. All three messages are protobuf.
 | `SharedMarkers` | server → client, every 15s | every marker not belonging to the recipient, added to their in-game map as temporary waypoints |
 | `IconRequest` | server → one admin's client | asks for marker pictures, carrying the names it already has |
 | `IconTable` | client → server, sliced by size | the SVGs that client's assets can supply |
-| `SkinColorRequest` | server → one admin's client | asks what the skin part variants look like, carrying the names it has |
-| `SkinColorTable` | client → server | variant names and their colours |
 | `PortraitRequest` | server → one client | asks that player to draw themselves |
 | `PlayerPortrait` | client → server | a PNG of that player's own seraph, drawn on their machine |
 | `PaletteRequest` | server → one admin's client | asks for a block colour palette, carrying the fingerprint it must match |
@@ -233,10 +230,6 @@ read: a file saying spawn is the origin reads exactly like a world whose spawn i
 the origin, and the map service says out loud that it is counting from absolute
 zero when the file is missing.
 
-**Appearance.** A player's applied skin parts are readable server side, but only
-as names: a variant carries a texture and no colour, and the game works the colour
-out on the client by sampling the texture. So the names travel with the player and
-the name-to-colour table is asked of an admin once.
 
 The marker pictures travel for a harder version of the same reason: a dedicated
 server's install contains **no SVG at all**, so unlike the palette this is not a
@@ -271,7 +264,6 @@ All require the `controlserver` privilege.
 | `/mapstique service [status\|start\|stop]` | the map service the mod runs. `start` ignores `autostart`, which only decides what happens unasked |
 | `/mapstique palette [player]` | ask an admin's client for a palette now, rather than waiting for the next one to join |
 | `/mapstique icons [player]` | ask an admin's client for every marker picture again |
-| `/mapstique colors [player]` | ask an admin's client what the skin part variants look like |
 
 On a client, with a dot rather than a slash:
 
@@ -280,7 +272,6 @@ On a client, with a dot rather than a slash:
 | `.mapstique portrait` | draw your character and send the picture |
 | `.mapstique palette` | build a block palette and send it |
 | `.mapstique icons` | send the marker pictures |
-| `.mapstique colors` | send what the skin part variants look like |
 
 `status` is the first thing to look at when the map looks wrong. `palette: from
 server` against `from client` says which machine's assets the colours came from,

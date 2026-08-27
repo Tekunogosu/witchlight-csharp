@@ -106,31 +106,3 @@ public class IconTable
         return all;
     }
 }
-
-
-/// <summary>Sent to one admin when the server has no colours for skin parts.</summary>
-[ProtoContract]
-public class SkinColorRequest
-{
-    /// <summary>Names already known, so a client sends only what is new.</summary>
-    [ProtoMember(1)]
-    public List<string> Have { get; set; } = new();
-}
-
-/// <summary>
-/// What each skin part variant looks like.
-///
-/// The server has the names a player applied but nothing that says what any of
-/// them look like: a variant carries a texture and no colour, and the textures are
-/// images a dedicated server does not ship. A client has both, and resolves the
-/// colour by sampling the texture — so it is asked, once, for the whole table.
-///
-/// Small enough not to need slicing: a name and seven characters each, for a few
-/// dozen variants.
-/// </summary>
-[ProtoContract]
-public class SkinColorTable
-{
-    [ProtoMember(1)] public List<string> Names { get; set; } = new();
-    [ProtoMember(2)] public List<string> Colors { get; set; } = new();
-}
