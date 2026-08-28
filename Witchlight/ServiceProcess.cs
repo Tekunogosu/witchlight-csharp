@@ -154,14 +154,40 @@ public sealed class ServiceProcess : IDisposable
     /// Anything unreadable is on: these turn the map and the message announcing it
     /// on, and a map that quietly does not appear is the failure worth avoiding.
     /// </summary>
-    private static bool On(string config, string key) =>
-        !string.Equals(Setting(config, key), "false", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// A yes-or-no setting, and what an absent one means.
+    ///
+    /// The default is given at the call rather than baked in here, because these
+    /// do not all lean the same way: a map runs and announces itself unless told
+    /// not to, and shares nobody's markers unless told to. One reader that
+    /// silently assumed the first would have made the third quietly wrong.
+    /// </summary>
+    private static bool On(string config, string key, bool byDefault)
+    {
+        var said = Setting(config, key);
+        if (string.IsNullOrWhiteSpace(said))
+        {
+            return byDefault;
+        }
+        return string.Equals(said.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>Whether the settings ask the mod to run the service itself.</summary>
-    public static bool Autostarts(string config) => On(config, "autostart");
+    public static bool Autostarts(string config) => On(config, "autostart", byDefault: true);
 
     /// <summary>Whether a joining player is told where the map is.</summary>
-    public static bool Announces(string config) => On(config, "announce");
+    public static bool Announces(string config) => On(config, "announce", byDefault: true);
+
+    /// <summary>
+    /// Whether a marker nobody has decided about belongs to everybody.
+    ///
+    /// Off by default: a marker a player drops is theirs until they say
+    /// otherwise. An operator running a map the whole server is meant to share
+    /// turns it on, and every marker without a decision of its own goes to
+    /// everyone — in the game and on the web both, which is why the setting sits
+    /// with the map rather than in a file of this mod's own.
+    /// </summary>
+    public static bool MarkersPublic(string config) => On(config, "markers_public", byDefault: false);
 
     /// <summary>
     /// The address to give a player, or null when there is none to give.
@@ -498,22 +524,33 @@ public sealed class ServiceProcess : IDisposable
     private static readonly TimeSpan WaitForAddress = TimeSpan.FromSeconds(20);
 
     /// <summary>
-    /// Takes down the published address, so that nothing hands a player the
-    /// address of a map that is not there.
+    /// Takes down everything the service published about itself, so that nothing
+    /// hands a player the address of a map that is not there — and nothing posts
+    /// live positions at whatever took its port next.
+    ///
+    /// The second matters more than the first. An address that has gone answers
+    /// nothing and is merely useless; a port that has been taken over answers
+    /// something, and there is no telling what.
     /// </summary>
     private void Forget()
     {
-        try
+        foreach (var path in new[]
+                 {
+                     Path.Combine(_exports, "service.json"),
+                     MapService.ConnectionPath(_exports),
+                 })
         {
-            var path = Path.Combine(_exports, "service.json");
-            if (File.Exists(path))
+            try
             {
-                File.Delete(path);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
             }
-        }
-        catch (Exception)
-        {
-            // A service that cannot be reached says so by not answering.
+            catch (Exception)
+            {
+                // A service that cannot be reached says so by not answering.
+            }
         }
     }
 

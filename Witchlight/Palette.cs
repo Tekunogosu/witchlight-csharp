@@ -576,13 +576,40 @@ public static class PaletteBuilder
         }
     }
 
-    public static void Write(Palette palette, string path)
+    /// <summary>
+    /// Writes the palette, unless it is already what is on disk.
+    ///
+    /// Returns whether anything was written.
+    ///
+    /// The comparison is the point, not the saving of a megabyte. The map service
+    /// watches this file and a palette arriving means every colour may have moved,
+    /// so it drops every tile and redraws the stored zoom levels — which is
+    /// seconds of a blank map. Two admins joining a server used to cost that twice
+    /// over for two identical palettes. A rewrite that changes nothing now costs
+    /// nothing.
+    /// </summary>
+    public static bool Write(Palette palette, string path)
     {
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
-        File.WriteAllText(path, JsonConvert.SerializeObject(palette, Formatting.Indented));
+
+        var body = JsonConvert.SerializeObject(palette, Formatting.Indented);
+        try
+        {
+            if (File.Exists(path) && File.ReadAllText(path) == body)
+            {
+                return false;
+            }
+        }
+        catch (Exception)
+        {
+            // Unreadable is not the same as identical, so it is written.
+        }
+
+        File.WriteAllText(path, body);
+        return true;
     }
 }

@@ -17,7 +17,7 @@ serves the map. Neither is useful alone, and the seams between them are all here
   │  │                              │  │ files  │                          │
   │  │   terrain, palette  ─────────┼──┼───────►│  reads on change         │
   │  │                              │  │        │                          │
-  │  │   players, markers  ─────────┼──┼───────►│  API socket (POST)       │
+  │  │   players, markers  ─────────┼──┼───────►│  API channel (POST)      │
   │  └──────────────────────────────┘  │        │                          │
   └────────────────────────────────────┘        └────────────┬─────────────┘
                                                              │ HTTP
@@ -26,8 +26,8 @@ serves the map. Neither is useful alone, and the seams between them are all here
 ```
 
 Terrain goes by file because it accumulates and must survive both programs
-stopping. Players and markers go by socket because a position is worthless by the
-time a disk has finished with it.
+stopping. Players and markers go over a socket because a position is worthless by
+the time a disk has finished with it.
 
 ## The service, on its map port
 
@@ -45,6 +45,9 @@ proxy in front of it before exposing it to the internet.
 | `GET /icons.json` | the marker pictures that exist | JSON array of names |
 | `GET /icons/{name}.svg` | one marker picture | SVG |
 | `GET /portraits/{name}.png` | a picture a player's client drew of their seraph | PNG |
+| `GET /login?t={word}` | spends a login link and seats the browser | `303` to `/`, with a cookie |
+| `GET /logout` | forgets this browser | `303` to `/` |
+| `GET /me.json` | who is looking, and what they may be offered | see below |
 
 Tile coordinates may be negative, and one tile is exactly one terrain region.
 Tiles are rendered when first asked for and then kept, so starting costs nothing
@@ -112,42 +115,93 @@ when it routes and serves the file either way; the query exists so that the addr
 changes when the picture does. It moves only when bytes were actually written, so a
 player who takes a hat off and puts it back gets the same address again.
 
-## The service, on its API socket
+### `GET /me.json`
+
+```json
+{"Name":"ada","Uid":"…","MarkersPublic":false}
+{"Name":null,"Uid":null,"MarkersPublic":false}
+```
+
+The same shape logged in or not, so a page never has to tell an error from a
+stranger. `MarkersPublic` is the operator's setting, here because it decides what
+the page may offer somebody who has not logged in.
+
+**The map itself stays public and unauthenticated.** A session decides only whose
+settings and whose markers a page may act on. Nothing here gates what can be seen.
+
+### Logging in
+
+Identity exists in one place, which is the game, so that is where a login starts.
+
+```
+player  /witchlight login
+  mod   POST /auth/mint  {"Uid":…,"Name":…}      (on the API channel)
+  mod   → chat, to that player alone: <announce_url>/login?t={word}
+player  follows it
+  map   303 to /, Set-Cookie: witchlight_session=…; HttpOnly; SameSite=Lax
+```
+
+A link is **single use and good for ten minutes**; a session lasts thirty days and
+its clock goes back to the full term on every request that carries it. Sessions
+live in memory and go when the service stops, which costs one click of one link.
+
+The word is in a cookie rather than in the path because the address is meant to be
+shared — the whole point of `#x,z,scale` is pasting a view to somebody. A session
+in the path would travel with it. It also keeps every tile URL out of a
+per-session namespace, which is what makes them cacheable.
+
+The cookie is not `Secure`: this is served over plain HTTP on a LAN as often as
+not, and a cookie the browser refuses to send is a login that silently never
+works. An operator putting the map on the internet puts TLS in front of it, which
+is the same place that flag belongs.
+
+## The service, on its API channel
 
 A second listener that accepts **writes**, which is why it is not on the map port:
 anything that could reach a public write endpoint could put people on the map who
 are not there.
 
-By default a unix socket in `/tmp`, named after the export directory:
+It listens on `127.0.0.1`, on whatever port the machine had free, and writes both
+down beside the map:
 
+```json
+{"Port":39963,"Token":"4509a2770a0a03e4043da99dd900e48f","Version":"0.16.1"}
 ```
-/tmp/witchlight-{fnv1a32 of the export path}.sock
-```
 
-A socket is how two programs talk, not something either of them keeps, so it
-belongs with the running system rather than beside the map. The name carries a
-hash of the path so that two game servers on one machine do not collide, and both
-sides derive it the same way from a path they already agree on — so neither needs
-configuring, and both print what they resolved, because a mismatch is otherwise
-silent. It also keeps the address at 28 bytes, far inside the hundred-odd a unix
-socket allows; a socket beside a data directory several levels deep can exceed it.
+That is `api.json` in the export directory, written as the service binds and
+removed when the mod stops it, mode `0600` where the system has modes. **Every
+post must carry `Authorization: Bearer {Token}`**; without it the answer is `401`.
 
-Both sides read the same setting to move it: `api_socket` in the service's config
-file (or `-a`), and `WITCHLIGHT_API_SOCKET` for the mod. A value with a colon and
-no separator is a `host:port`; anything else is a unix socket path.
+Two things stand between this endpoint and the rest of the world, and they are
+meant to be read as one: loopback, which nothing off the machine can reach, and
+the token, which nothing on it can produce without reading a file only its owner
+can read. That is what a unix socket's permissions buy, expressed in something
+Rust and .NET both have on Windows. The port is asked of the machine rather than
+derived from the export path, which is what keeps two game servers on one box from
+colliding without either being configured.
 
-**Both programs must run as the same user**, or the socket's permissions must be
-widened to a shared group. A unix socket needs write permission to connect, and
-the default `umask` gives that to the owner alone. Where that is not possible, set
-both sides to a `host:port` on `127.0.0.1` instead.
+**The port changes on every service start.** The mod reads `api.json` again
+whenever a post fails or is answered `401`, so a restarted service is picked up
+within one tick, and a mod that starts the service finds the file a moment after
+looking for it. Nothing caches the port across a failure.
+
+Both sides can be moved off loopback for a mod on another machine, which is the
+one case a file beside the map cannot tell it anything: `api_bind` and `api_token`
+in the service's config file (`-a` for the address), and `WITCHLIGHT_API_BIND` and
+`WITCHLIGHT_API_TOKEN` for the mod. Set both, on both sides.
 
 | | | |
 |---|---|---|
 | `POST /live/players` | who is online, a JSON array | every 2s |
 | `POST /live/markers` | every marker, a JSON array | only when they differ from the last post |
+| `POST /auth/mint` | `{"Uid":…,"Name":…}` → `{"Token":…}` | when a player asks for a link |
 
-Both answer `204` on success, `400` for a body that is not a JSON array, `404`
-for another path, and `405` for anything but a POST. A post may carry 8 MB at
+`/auth/mint` is the one thing here that answers rather than merely accepting. It
+lives on this channel because only the mod can reach it and only the mod knows
+which uid belongs to which player — the trust it needs is the trust already here.
+
+Both answer `204` on success, `400` for a body that is not a JSON array, `401`
+without the token, `404` for another path, and `405` for anything but a POST. A post may carry 8 MB at
 most. The service does not parse either payload — the mod knows what a waypoint
 is, and the service knows it is a JSON array to hand to a browser, which is the
 whole of the contract.
@@ -182,8 +236,9 @@ the file — the format has one owner and it is the service.
 | `markers.json` | **by the service**, when markers arrive and differ | the last markers posted |
 | `portraits/{uid in hex}.png` | on that player's every join, and 30s after their character last changed | a picture of that player's seraph, drawn on their own machine |
 | `service.json` | **by the service**, as it binds | the addresses the map answers on, the one worth giving somebody else first. Removed when the mod stops the service, so nothing hands a player the address of a map that is gone |
+| `api.json` | **by the service**, as it binds | the port and token of the API channel, mode `0600`. Removed when the mod stops the service — a port that has been taken over by something else answers, and there is no telling what |
 
-The API socket is **not** here; it lives in `/tmp`, as above.
+
 
 **The format still moves.** Witchlight is alpha, so a map on disk the mod cannot
 read — an older format, or a file it cannot parse — is deleted on start and
@@ -289,7 +344,8 @@ log says so. Every table below gives the long name, since that is the one that i
 always there.
 
 Every server command requires the `controlserver` privilege, inherited from the
-root down the command tree. The client ones are not privileged — `.witchlight
+root down the command tree — except `login`, which requires only `chat` and a
+player to have typed it, because it acts on nothing but its own caller. The client ones are not privileged — `.witchlight
 portrait` is a player sending their own picture, and the server drops a palette or
 a set of icons from anybody who is not an admin regardless of what asked for it.
 
@@ -299,6 +355,7 @@ a set of icons from anybody who is not an admin regardless of what asked for it.
 | `/witchlight status` | where the exports are, where the palette came from, how much terrain is stored, where the world counts from, whether the map service is up, and how many columns are waiting |
 | `/witchlight portrait [player]` | ask a player's client for a picture of their character now, rather than waiting for their next join |
 | `/witchlight service [status\|start\|stop]` | the map service the mod runs. `start` ignores `autostart`, which only decides what happens unasked |
+| `/witchlight login` | send yourself a link that logs your browser in as you. The one subcommand that is **not** privileged — every player has settings of their own |
 | `/witchlight palette [player]` | ask an admin's client for a palette now, rather than waiting for the next one to join |
 | `/witchlight icons [player]` | ask an admin's client for every marker picture again |
 

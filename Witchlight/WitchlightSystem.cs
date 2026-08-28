@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
@@ -131,6 +132,15 @@ public class WitchlightSystem : ModSystem
             .WithShortName(api)
             .WithDescription("Witchlight map server tools")
             .RequiresPrivilege(Privilege.controlserver)
+            .BeginSubCommand("login")
+                .WithDescription("Send yourself a link to your own page of the map")
+                // The one branch of this tree that is not an operator's. Every
+                // player has their own markers and their own settings, so every
+                // player can ask for the link that reaches them.
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .HandleWith(OnLogin)
+            .EndSubCommand()
             .BeginSubCommand("export")
                 .WithDescription("Write the surface of every loaded chunk")
                 .HandleWith(OnExport)
@@ -159,6 +169,65 @@ public class WitchlightSystem : ModSystem
                 .WithArgs(api.ChatCommands.Parsers.OptionalWord("player"))
                 .HandleWith(OnPaletteFetch)
             .EndSubCommand();
+    }
+
+    /// <summary>
+    /// Sends one player a link that logs their browser in as them.
+    ///
+    /// The game is the only place identity exists, and this is the only channel
+    /// that reaches a particular person — so the link is minted on the service's
+    /// private channel, which nothing but this mod can reach, and handed over in
+    /// a message only its owner sees.
+    ///
+    /// The address comes from the same setting that tells joining players where
+    /// the map is. A link to an address only this machine can reach is not worth
+    /// sending, which is the same reason `announce_url` exists.
+    /// </summary>
+    private TextCommandResult OnLogin(TextCommandCallingArgs args)
+    {
+        if (_sapi is null || _service is null)
+        {
+            return TextCommandResult.Error("The map service is not running.");
+        }
+
+        if (args.Caller.Player is not IServerPlayer player)
+        {
+            return TextCommandResult.Error("Only a player has a page of their own.");
+        }
+
+        if (ServiceProcess.Announcement(ServiceProcess.ConfigPath, ExportDir) is not { } where)
+        {
+            return TextCommandResult.Error(
+                "The map has no address to hand out. Set `announce_url` in witchlight.conf.");
+        }
+
+        var uid = player.PlayerUID;
+        var name = player.PlayerName ?? "";
+
+        // Off the game thread, because it is a round trip to another program, and
+        // back onto it to speak: everything the server says, it says from there.
+        _ = Task.Run(async () =>
+        {
+            var link = await _service.Link(uid, name, where).ConfigureAwait(false);
+            _sapi.Event.EnqueueMainThreadTask(() =>
+            {
+                var told = _sapi.World.PlayerByUid(uid) as IServerPlayer;
+                if (told is null)
+                {
+                    return;
+                }
+                _sapi.SendMessage(
+                    told,
+                    GlobalConstants.GeneralChatGroup,
+                    link is null
+                        ? "The map could not be asked for a link. Is the service running?"
+                        : $"Your map: <a href=\"{link}\">open it</a> — the link is good for ten "
+                          + "minutes and works once.",
+                    EnumChatType.Notification);
+            }, "witchlight-login");
+        });
+
+        return TextCommandResult.Success("Asking the map for a link…");
     }
 
     /// <summary>
@@ -1022,16 +1091,17 @@ public class WitchlightSystem : ModSystem
             ? Palette.Merge(supplied, existing)
             : supplied;
 
-        PaletteBuilder.Write(merged, path);
+        var written = PaletteBuilder.Write(merged, path);
         _needsPalette = merged.Coverage < RequiredCoverage;
         _askedUid = null;
 
         _sapi.Logger.Notification(
-            "[witchlight] palette from {0}: {1} of {2} blocks coloured ({3:P0}){4}",
+            "[witchlight] palette from {0}: {1} of {2} blocks coloured ({3:P0}){4}{5}",
             player.PlayerName,
             merged.Coloured,
             merged.Textured,
             merged.Coverage,
+            written ? "" : ", unchanged — the map was not redrawn",
             _needsPalette ? ", still incomplete" : "");
     }
 
@@ -1113,17 +1183,66 @@ public class WitchlightSystem : ModSystem
         // A palette a client supplied for this same mod set is better than
         // anything this server can build, so it is kept and only filled in.
         var path = Path.Combine(ExportDir, "palette.json");
-        // A stored palette is only reusable if the registry still matches and the
-        // server's own mods have not moved underneath it.
         var existing = PaletteBuilder.Read(path);
-        var reusable = existing is not null
-            && existing.Fingerprint == built.Fingerprint
-            && (existing.ModStamp.Length == 0 || existing.ModStamp == built.ModStamp);
-        var palette = reusable ? Palette.Merge(existing!, built) : built;
 
-        PaletteBuilder.Write(palette, path);
+        // A stored colour is keyed on a block id, so the fingerprint — which is
+        // the block registry and nothing else — is the whole of whether those
+        // colours still mean anything. Nothing else may discard them.
+        var valid = existing is not null && existing.Fingerprint == built.Fingerprint;
+
+        // A moved mod stamp means some mod's textures may have changed under
+        // colours that are still keyed correctly: stale, not wrong. This once
+        // threw the palette away for that, and a dedicated server builds itself
+        // one with no colours at all — so a map that had every colour lost them
+        // on the next restart, and drew nothing above its stored zoom levels
+        // until an admin happened to join. Stale colours beat none. They are
+        // kept, and an admin is asked for a fresh set instead.
+        var moved = valid && existing!.ModStamp.Length > 0
+            && existing.ModStamp != built.ModStamp;
+
+        var palette = valid ? Palette.Merge(existing!, built) : built;
+        if (valid)
+        {
+            // Reconciled against the mod set as it stands, so one move of it
+            // costs one ask rather than an ask on every start thereafter.
+            palette.ModStamp = built.ModStamp;
+        }
+
+        var written = PaletteBuilder.Write(palette, path);
+
+        // Coverage alone. A palette that colours what there is to colour is good,
+        // and nothing about a mod's version number says otherwise: witchlight
+        // ships no block textures, so its own releases moved the stamp and every
+        // admin joining was asked for a palette that was already correct — and
+        // every one of those answers blanked the map while it redrew.
+        //
+        // A texture changing under an unmoved block id is the case this cannot
+        // see, and it is the case `/witchlight palette` exists for. Asking on
+        // suspicion costs a blank map every time; asking by hand costs a command
+        // on the rare occasion it is true.
         _needsPalette = palette.Coverage < RequiredCoverage;
-        if (_needsPalette)
+
+        if (moved)
+        {
+            api.Logger.Notification(
+                "[witchlight] a mod moved since these {0} colours were built — keeping them. "
+                + "Run `/witchlight palette` if a mod changed its block textures.",
+                palette.Coloured);
+        }
+
+        // Said out loud, because it is the one case where colours are genuinely
+        // lost and the map goes flat until somebody joins to fix it.
+        if (!valid && existing is not null && existing.Coloured > palette.Coloured)
+        {
+            api.Logger.Warning(
+                "[witchlight] the block registry changed, so the stored palette's {0} colours no "
+                + "longer match this world's block ids and have been replaced by this server's "
+                + "own ({1} colours). The map draws nothing until an admin joins and supplies one.",
+                existing.Coloured,
+                palette.Coloured);
+        }
+
+        if (palette.Coverage < RequiredCoverage)
         {
             api.Logger.Notification(
                 "[witchlight] only {0:P0} of blocks have a colour — an admin will be asked for a palette on join",
@@ -1137,7 +1256,9 @@ public class WitchlightSystem : ModSystem
         api.Logger.Notification("[witchlight] marker icons: {0} written, from {1}", icons, from);
 
         api.Logger.Notification(
-            "[witchlight] palette: {0} blocks written to {1}{2}",
+            written
+                ? "[witchlight] palette: {0} blocks written to {1}{2}"
+                : "[witchlight] palette: {0} blocks, unchanged — {1} not rewritten{2}",
             palette.Blocks.Count,
             path,
             missing > 0 ? $" ({missing} without a readable texture)" : "");

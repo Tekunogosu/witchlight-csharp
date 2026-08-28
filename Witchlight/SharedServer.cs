@@ -7,11 +7,17 @@ using Vintagestory.GameContent;
 namespace Witchlight;
 
 /// <summary>
-/// Sends every player the markers belonging to everyone else, so the in-game map
-/// shows the whole server's markers rather than only your own.
+/// Sends every player the markers belonging to everyone else that they are meant
+/// to see, so the in-game map can show more than only your own.
 ///
-/// A player's own markers are left out: they already have those, and sending
-/// them back would put a second copy on their map.
+/// A player's own markers are left out: they already have those, and sending them
+/// back would put a second copy on their map.
+///
+/// **Whose markers travel is an operator's decision.** A marker a player drops is
+/// theirs; `markers_public` in the map's settings is what makes one everybody's.
+/// Until a player can mark a single waypoint as shared, that setting is the whole
+/// of the answer: off shares nothing, on shares everything, and there is no third
+/// state yet for the per-marker choice to live in.
 /// </summary>
 public static class SharedServer
 {
@@ -19,6 +25,14 @@ public static class SharedServer
 
     public static SharedMarkers For(ICoreServerAPI api, IServerPlayer player)
     {
+        // Read each time rather than held, so an operator changing their mind
+        // takes effect on the next send instead of the next restart — the same
+        // rule the announcement follows.
+        if (!ServiceProcess.MarkersPublic(ServiceProcess.ConfigPath))
+        {
+            return new SharedMarkers();
+        }
+
         var layer = api.ModLoader
             .GetModSystem<WorldMapManager>()?
             .MapLayers?

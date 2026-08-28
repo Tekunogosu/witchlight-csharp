@@ -3,7 +3,7 @@
 The Vintage Story half of Witchlight. It exports what a map renderer needs, and
 shares every player's map markers with everyone on the server.
 
-The renderer is a separate program, [`witchlight`](../rust/mapstique), which takes
+The renderer is a separate program, [`witchlight`](../rust/witchlight), which takes
 what this side produces and serves a browsable map. This side knows the game; that
 side knows pixels. Keeping the game-coupled code here and small is deliberate: a
 Vintage Story update can only ever break this half.
@@ -20,7 +20,7 @@ what a seraph looks like exists only where it is rendered, so a player's own cli
 draws one and sends the picture. Every player is asked on every join, and a client
 sends another thirty seconds after its character last changed.
 
-Versions track the [map service](../rust/mapstique) and **must match on minor
+Versions track the [map service](../rust/witchlight) and **must match on minor
 version**. A format change clears the map while Witchlight is alpha — see
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -42,8 +42,8 @@ worthless by the time a disk has finished with it.
 | where the world counts from | `world.json` | at start |
 
 The files land in `<data path>/witchlight`. The service listens for posts on its
-API socket — a unix socket in `/tmp`, named after that directory so both sides
-find it without being told. See [API.md](API.md). Ten seconds after start it loads a 17×17
+API channel — loopback, on a port it writes into `api.json` in that same directory
+so both sides find each other without being told. See [API.md](API.md). Ten seconds after start it loads a 17×17
 block of chunk columns around spawn and exports those, so a fresh server has a map
 without waiting for anyone to walk the world.
 
@@ -336,7 +336,7 @@ server is handed the map service and a client has no use for a megabyte of it �
 can sit in `dist/` at once rather than one quietly overwriting the other.
 
 The map service is looked for in `/var/tmp/rust-target/release/witchlight` and
-`../rust/mapstique/target/release/witchlight`, or wherever `$WITCHLIGHT_SERVICE`
+`../rust/witchlight/target/release/witchlight`, or wherever `$WITCHLIGHT_SERVICE`
 says. Packaging **stops** when there is none, rather than quietly producing a mod
 that exports a map it cannot serve; `--no-service` is how to mean it.
 

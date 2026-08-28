@@ -1,6 +1,6 @@
 # Witchlight (server mod)
 
-The version tracks the [map service](../rust/mapstique), and the two **must match
+The version tracks the [map service](../rust/witchlight), and the two **must match
 on minor version** — they share a file format and a socket protocol, and neither
 reads what the other half of a different minor wrote.
 
@@ -8,7 +8,119 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
-## Unreleased
+## 0.17.0
+
+**Deploy both halves together.** The mod and the service no longer speak the
+protocol they did before this, and neither reads what the other minor wrote.
+
+**A settings file older than this stops the service**, which says which name
+replaced which: `api_socket` is now `api_bind`, an address rather than a unix
+socket path. Leave it empty for loopback on a free port, which is where the mod
+now looks.
+
+**Markers are private now.** Every marker used to reach every player's in-game
+map; `markers_public` decides that, and it is off. Until a player can mark a
+single waypoint as shared, off means nothing is shared in game at all — a server
+that wants what it had sets `markers_public = true` for now.
+
+The map is **not** cleared: the region format is untouched.
+
+### A palette is asked for and written only when something changed
+
+Every admin joining used to be asked for a palette, and every answer rewrote
+`palette.json` — which the map service watches, so it dropped every tile and
+redrew the stored zoom levels. Two admins on a server meant the map blanked twice
+over for two palettes identical to the one already on disk.
+
+Two things were wrong. A moved mod stamp forced the ask, and witchlight ships no
+block textures — so its own releases moved the stamp and every admin was asked for
+a palette that was already correct. Coverage alone decides now: a palette that
+colours what there is to colour is good, and a version number says nothing about
+that. A texture changing under an unmoved block id is the case the server cannot
+see, and it is the case `/witchlight palette` exists for; asking on suspicion
+costs a blank map every time, asking by hand costs a command on the rare occasion
+it is true.
+
+And a palette is written only when it differs from what is on disk. The saving is
+not the megabyte — it is that a file nobody changed no longer costs a redraw of
+the whole map.
+
+### A player can log in to the map
+
+`/witchlight login` sends you a link, privately, that logs your browser in as you.
+It is the only subcommand that is not an operator's: it acts on nothing but its
+own caller, so it wants `chat` and a player, not `controlserver`.
+
+Identity exists in one place, which is the game. The mod asks the service for a
+word on the private API channel — the only listener it can reach, and the only
+place that knows which uid belongs to which player — and hands it over in chat.
+The link is good for ten minutes and works once; what it buys is a session in a
+cookie, so the address stays shareable.
+
+Nothing is gated behind it yet. The map is public and stays public; a session
+decides only whose settings and whose markers a page may act on, once there are
+any.
+
+### Markers are private unless the operator says otherwise
+
+`markers_public` in the map's settings, off by default. A marker a player drops is
+theirs; before this, every marker on the server went to every player's in-game map
+whether or not its owner meant it to.
+
+**Off means nothing is shared in game at all**, because there is nowhere yet for a
+player to mark one waypoint as shared — that is the marker work this is the
+groundwork for. A server that wants what it had before sets `markers_public = true`
+until the per-marker choice lands.
+
+The reader for these settings now takes the default at the call rather than baking
+one in. They do not all lean the same way — a map runs and announces itself unless
+told not to, and shares nobody's markers unless told to — and one reader assuming
+the first would have made the third quietly wrong.
+
+### A palette is never thrown away for a moved mod
+
+A stored palette was kept only if the block registry matched **and** the mod set
+had not moved. When either failed it was not set aside — it was overwritten, by
+the one this server can build for itself, which on a dedicated server has no
+colours at all. A map with every colour lost them on the next restart and drew
+nothing above its stored zoom levels until an admin happened to join.
+
+The two conditions were never the same question. A colour is keyed on a block id,
+so the fingerprint — the block registry and nothing else — is the whole of whether
+stored colours still mean anything. A moved mod stamp means some mod's textures
+may have changed underneath colours that are still keyed correctly: stale, not
+wrong. Stale colours beat none, so they are kept and an admin is asked for a fresh
+set instead. The written palette carries the current stamp, so one move of the mod
+set costs one ask rather than an ask on every start after it.
+
+Where the registry really has changed the stored colours are genuinely invalid and
+are still replaced — but that is now said out loud, with both counts, because it
+is the one case where the map goes flat until somebody joins to fix it.
+
+### Live data goes to loopback, not a unix socket
+
+The mod posted players and markers to a unix socket in `/tmp` whose name both
+sides derived from the export path. Rust has no unix sockets on Windows, and a
+Vintage Story server runs there, so the transport went rather than the shape.
+
+The service now listens on `127.0.0.1` on a port the machine picks, and publishes
+that port with a token in `api.json` beside the map. The mod reads it and sends
+`Authorization: Bearer {Token}` with every post. Both halves already had the plain
+TCP path; what is gone is the socket-only one, so what Linux runs is now what
+Windows would run.
+
+Where the service is is read again whenever a post fails or comes back `401`,
+because the port moves with every service start — and because the mod is usually
+the thing that started it, and looks before the file is written. That first miss
+is one warning and one tick, and then the map has data.
+
+`api.json` is removed along with `service.json` when the mod stops the service. A
+published address that has gone merely fails; a published port that something else
+has taken answers, and there is no telling what.
+
+Set `WITCHLIGHT_API_BIND` and `WITCHLIGHT_API_TOKEN` — replacing
+`WITCHLIGHT_API_SOCKET` — only for a service on another machine, and set
+`api_bind` and `api_token` to match on it.
 
 ### A new portrait shows without a reload
 
@@ -458,7 +570,7 @@ state the map service names out loud on start.
 
 ### The version now tracks the map service again
 
-This is numbered 0.12.1 to match [witchlight 0.12.1](../rust/mapstique). The skin
+This is numbered 0.12.1 to match [witchlight 0.12.1](../rust/witchlight). The skin
 colour work shipped here as 0.11.0 and there as 0.12.0, which left the two halves
 disagreeing about their own compatibility generation — the one thing the version
 is for.

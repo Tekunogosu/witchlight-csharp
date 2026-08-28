@@ -1,10 +1,13 @@
 using System;
 using System.IO;
+using System.Net;
 using System.Net.Http;
-using System.Net.Sockets;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Vintagestory.API.Common;
 
 namespace Witchlight;
@@ -17,12 +20,20 @@ namespace Witchlight;
 /// round trip through the disk for data that never needed to survive it — with a
 /// write every couple of seconds for as long as the server was up.
 ///
-/// The service listens on a unix socket in `/tmp`, named after the export
-/// directory so that both sides find it without being told and two game servers
-/// on one machine do not collide. A socket is how two programs talk rather than
-/// something either keeps, so it belongs with the running system and not beside
-/// the map. Set `WITCHLIGHT_API_SOCKET` to a `host:port` or another path to move
-/// it, and set `api_socket` to the same value on the service.
+/// The service listens on loopback, on whatever port the machine had free, and
+/// writes both that port and a token into `api.json` beside the map. Nothing off
+/// the machine can reach loopback and nothing on it can post without having read
+/// that file, which is the protection a unix socket's permissions used to give —
+/// on a platform where Windows has one too.
+///
+/// The port changes every time the service starts, so where it is is a belief
+/// about the service rather than a fact about it, and the file is read again
+/// whenever a post fails. That also covers the ordinary first case: the mod
+/// starts the service, so for the first moments there is no file to read.
+///
+/// Set `WITCHLIGHT_API_BIND` and `WITCHLIGHT_API_TOKEN` to reach a service on
+/// another machine, which cannot be told anything by a file beside this one; set
+/// `api_bind` and `api_token` to match on the service.
 ///
 /// Nothing here blocks the game. Posts run on the thread pool and one is dropped
 /// rather than queued if the last has not finished: a position that arrived late
@@ -30,11 +41,22 @@ namespace Witchlight;
 /// </summary>
 public sealed class MapService : IDisposable
 {
-    private const string Variable = "WITCHLIGHT_API_SOCKET";
+    private const string BindVariable = "WITCHLIGHT_API_BIND";
+    private const string TokenVariable = "WITCHLIGHT_API_TOKEN";
+
+    /// <summary>Where the service says it is listening, and the word it wants.</summary>
+    private sealed record Endpoint(string Url, string Token);
 
     private readonly HttpClient _client;
     private readonly ILogger _log;
-    private readonly string _where;
+    private readonly string _exports;
+
+    /// <summary>
+    /// The last answer read out of `api.json`, or null where there was none to
+    /// read. Replaced wholesale rather than mutated, so a post already in flight
+    /// finishes against the endpoint it started with.
+    /// </summary>
+    private volatile Endpoint? _endpoint;
 
     /// <summary>
     /// What happened to the last post of each kind, for `/witchlight status`.
@@ -62,35 +84,114 @@ public sealed class MapService : IDisposable
     public MapService(string exports, ILogger log, TimeSpan? resendMarkersEvery = null)
     {
         _log = log;
+        _exports = exports;
         _resendMarkers = resendMarkersEvery ?? TimeSpan.FromMinutes(5);
-        var setting = Environment.GetEnvironmentVariable(Variable) ?? "";
-        var address = setting.Length > 0 ? setting : DefaultSocket(exports);
 
-        // A colon and no separator is an address; anything else is a socket path.
-        // The service reads its own setting the same way.
-        if (address.Contains(':') && !address.Contains(Path.DirectorySeparatorChar))
+        // No BaseAddress: the port moves with every service start, and a client
+        // carries its base for life. Each post names where it is going instead.
+        _client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+
+        _endpoint = Resolve();
+        log.Notification(
+            "[witchlight] posting live data to {0}",
+            _endpoint?.Url ?? $"whatever {ConnectionPath(exports)} names, once the service has written it");
+    }
+
+    /// <summary>Where the connection file is. The service writes it as it binds.</summary>
+    public static string ConnectionPath(string exports) => Path.Combine(exports, "api.json");
+
+    /// <summary>
+    /// Where to post, from the environment if an operator said, and otherwise from
+    /// the file the service wrote.
+    ///
+    /// Null rather than a guess where there is nothing to read. A service that has
+    /// not started yet and one that will never start look the same from here, and
+    /// both are answered by trying again on the next tick.
+    /// </summary>
+    private Endpoint? Resolve()
+    {
+        var bind = Environment.GetEnvironmentVariable(BindVariable) ?? "";
+        var token = Environment.GetEnvironmentVariable(TokenVariable) ?? "";
+        if (bind.Length > 0)
         {
-            _where = $"http://{address}";
-            _client = new HttpClient { BaseAddress = new Uri(_where) };
+            return new Endpoint($"http://{bind}", token);
         }
-        else
+
+        try
         {
-            _where = address;
-            var handler = new SocketsHttpHandler
+            var path = ConnectionPath(_exports);
+            if (!File.Exists(path))
             {
-                ConnectCallback = async (_, token) =>
-                {
-                    var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-                    await socket.ConnectAsync(new UnixDomainSocketEndPoint(address), token);
-                    return new NetworkStream(socket, ownsSocket: true);
-                },
-            };
-            // The host is ignored for a socket, but HttpClient insists on one.
-            _client = new HttpClient(handler) { BaseAddress = new Uri("http://witchlight") };
+                return null;
+            }
+
+            var read = JObject.Parse(File.ReadAllText(path));
+            var port = (int?)read["Port"] ?? 0;
+            var word = (string?)read["Token"] ?? "";
+            if (port <= 0 || word.Length == 0)
+            {
+                return null;
+            }
+
+            return new Endpoint($"http://127.0.0.1:{port}", word);
+        }
+        catch (Exception error)
+        {
+            // A half-written or unreadable file is the same as no file: something
+            // else is wrong and saying so every two seconds would not help.
+            _log.Debug("[witchlight] could not read the connection file: {0}", error.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Asks the service for a login word for one player, and gives back the whole
+    /// address to hand them — or null where there is none to give.
+    ///
+    /// Its own request rather than a ride on the tick, because it is the one
+    /// thing here that answers rather than merely being accepted, and because it
+    /// happens when somebody types rather than every two seconds. Awaited by the
+    /// caller off the game thread: it is an HTTP round trip, and the game does
+    /// not wait for the map.
+    /// </summary>
+    public async Task<string?> Link(string uid, string name, string where)
+    {
+        var endpoint = _endpoint ?? (_endpoint = Resolve());
+        if (endpoint is null)
+        {
+            return null;
         }
 
-        _client.Timeout = TimeSpan.FromSeconds(5);
-        log.Notification("[witchlight] posting live data to {0}", _where);
+        try
+        {
+            var asked = JsonConvert.SerializeObject(new { Uid = uid, Name = name });
+            using var content = new StringContent(asked, Encoding.UTF8, "application/json");
+            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + "/auth/mint")
+            {
+                Content = content,
+            };
+            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
+
+            var reply = await _client.SendAsync(message).ConfigureAwait(false);
+            if (reply.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                _endpoint = null;
+            }
+            if (!reply.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var body = await reply.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var word = (string?)JObject.Parse(body)["Token"];
+            return string.IsNullOrEmpty(word) ? null : $"{where.TrimEnd('/')}/login?t={word}";
+        }
+        catch (Exception error)
+        {
+            _endpoint = null;
+            _log.Warning("[witchlight] could not ask the map for a login link: {0}", error.Message);
+            return null;
+        }
     }
 
     /// <summary>Who is online and where. Held in memory by the service.</summary>
@@ -135,21 +236,37 @@ public sealed class MapService : IDisposable
 
         _ = Task.Run(async () =>
         {
+            // Read again where the last attempt found nothing. The service may
+            // simply not have finished starting; it is the mod that started it.
+            var endpoint = _endpoint ?? (_endpoint = Resolve());
+            if (endpoint is null)
+            {
+                Complain(isPlayers, $"no service yet at {ConnectionPath(_exports)}");
+                Done(isPlayers);
+                return;
+            }
+
             try
             {
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
-                var reply = await _client.PostAsync(path, content).ConfigureAwait(false);
+                using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + path)
+                {
+                    Content = content,
+                };
+                message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
+
+                var reply = await _client.SendAsync(message).ConfigureAwait(false);
                 if (reply.IsSuccessStatusCode)
                 {
                     if (isPlayers)
                     {
-                        PlayersHealth = $"reaching {_where}";
+                        PlayersHealth = $"reaching {endpoint.Url}";
                     }
                     else
                     {
                         _sentMarkers = json;
                         _markersSentAt = DateTime.UtcNow;
-                        MarkersHealth = $"reaching {_where}, {json.Length} bytes accepted";
+                        MarkersHealth = $"reaching {endpoint.Url}, {json.Length} bytes accepted";
                     }
 
                     if (_complained)
@@ -160,55 +277,40 @@ public sealed class MapService : IDisposable
                 }
                 else
                 {
+                    // A rejected token means the service restarted and minted a
+                    // new one, which is the same fix as a refused connection.
+                    if (reply.StatusCode == HttpStatusCode.Unauthorized)
+                    {
+                        _endpoint = null;
+                    }
                     Complain(isPlayers, $"refused with {(int)reply.StatusCode}");
                 }
             }
             catch (Exception error)
             {
                 // The service being down is ordinary — it is a separate program
-                // and the game does not depend on it.
-                Complain(isPlayers, $"could not reach {_where}: {error.Message}");
+                // and the game does not depend on it. Its address is dropped with
+                // it, so the next tick reads where the next one bound.
+                _endpoint = null;
+                Complain(isPlayers, $"could not reach {endpoint.Url}: {error.Message}");
             }
             finally
             {
-                if (isPlayers)
-                {
-                    Interlocked.Exchange(ref _sendingPlayers, 0);
-                }
-                else
-                {
-                    Interlocked.Exchange(ref _sendingMarkers, 0);
-                }
+                Done(isPlayers);
             }
         });
     }
 
-    /// <summary>
-    /// Where the service listens unless told otherwise. The service derives the
-    /// same name from the same path, so neither side needs configuring; both say
-    /// what they resolved, because a mismatch is otherwise silent.
-    /// </summary>
-    public static string DefaultSocket(string exports)
+    /// <summary>Lets the next post of this kind start.</summary>
+    private void Done(bool isPlayers)
     {
-        var full = Path.GetFullPath(exports).TrimEnd(Path.DirectorySeparatorChar);
-        return $"/tmp/witchlight-{Tag(full):x8}.sock";
-    }
-
-    /// <summary>
-    /// FNV-1a, 32 bits. Short, and simple enough that the service computes the
-    /// same number from the same path without either side sharing code.
-    /// </summary>
-    private static uint Tag(string text)
-    {
-        unchecked
+        if (isPlayers)
         {
-            var hash = 0x811c9dc5u;
-            foreach (var b in Encoding.UTF8.GetBytes(text))
-            {
-                hash ^= b;
-                hash *= 0x01000193u;
-            }
-            return hash;
+            Interlocked.Exchange(ref _sendingPlayers, 0);
+        }
+        else
+        {
+            Interlocked.Exchange(ref _sendingMarkers, 0);
         }
     }
 

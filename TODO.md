@@ -34,10 +34,11 @@ there rather than from `Column`.
 
 ## Give the mod a configuration file
 
-The only setting it has is `WITCHLIGHT_API_SOCKET`, read from the environment,
-which moves the socket but changes nothing else — the export interval,
-the seed radius and the coverage threshold are all constants. A server owner who
-wants a thirty-second export to be five minutes has to rebuild the mod.
+Its only settings are `WITCHLIGHT_API_BIND` and `WITCHLIGHT_API_TOKEN`, read from
+the environment, which move the API channel off loopback and change nothing else —
+the export interval, the seed radius and the coverage threshold are all constants.
+A server owner who wants a thirty-second export to be five minutes has to rebuild
+the mod.
 
 ## Send only changed markers
 
