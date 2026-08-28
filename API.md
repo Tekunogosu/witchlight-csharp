@@ -32,28 +32,67 @@ the time a disk has finished with it.
 ## The service, on its map port
 
 Bound to `0.0.0.0:8080` by default, so it is reachable from the rest of the
-network as soon as it starts. **Read-only, and unauthenticated**: everything here
-is visible to anything that can reach the port. Put a TLS-terminating reverse
-proxy in front of it before exposing it to the internet.
+network as soon as it starts. Put a TLS-terminating reverse proxy in front of it
+before exposing it to the internet.
+
+**Everything is readable by anything that can reach the port**, apart from a
+marker its owner kept private — those are filtered before the page is answered,
+since a browser cannot be asked to hide what it has been handed. Everything under
+**What it changes** needs a session cookie, apart from the two addresses that
+create and end one — and only a login link minted on the API channel can seat a
+session.
+
+The page itself:
 
 | | | |
 |---|---|---|
-| `GET /` | the map viewer | HTML, with the world's bounds compiled in |
-| `GET /info.json` | what the map is and whether it has changed | see below |
-| `GET /tiles/{x}/{z}.png` | one tile, 256 blocks square at one pixel per block | PNG |
-| `GET /live.json` | who is online and every marker | see below |
-| `GET /icons.json` | the marker pictures that exist | JSON array of names |
-| `GET /colors.json` | the colours the game offers for a marker | JSON array of `#rrggbb` |
-| `POST /markers` | asks the game to make a marker | `202` and the name it will have |
+| `GET /` | the map viewer | HTML, with the world's bounds filled in |
+| `GET /viewer.css?v={version}` | everything the page looks like | CSS, cached forever |
+| `GET /viewer.js?v={version}` | everything the page does | JavaScript, cached forever |
+| `GET /leaflet.js` `GET /leaflet.css` | the vendored library the page extends | cached forever |
+
+What it draws with:
+
+| | | |
+|---|---|---|
+| `GET /tiles/{level}/{x}/{z}.png` | one tile, 512 pixels square | PNG |
 | `GET /icons/{name}.svg` | one marker picture | SVG |
 | `GET /portraits/{name}.png` | a picture a player's client drew of their seraph | PNG |
+
+What it asks:
+
+| | | |
+|---|---|---|
+| `GET /info.json` | what the map is and whether it has changed | see below |
+| `GET /live.json` | who is online and every marker this browser may see | see below |
+| `GET /me.json` | who is looking, and what they may be offered | see below |
+| `GET /icons.json` | the marker pictures that exist | JSON array of names |
+| `GET /colors.json` | the colours the game offers for a marker | JSON array of `#rrggbb` |
+| `GET /blocks.json?q={typed}` | blocks whose code or name reads like this | up to 24 `{Code, Name}` |
+| `GET /block.json?x={x}&z={z}` | what the map drew at one block | see below |
+
+What it changes, and the two addresses a session comes and goes by:
+
+| | | |
+|---|---|---|
+| `POST /markers` | asks the game to make a marker | `202` and the name it will have |
+| `PUT /markers/{key}` | asks the game to change one | `202` and the same name |
+| `GET /me/preferences.json` | this person's presets and defaults | the whole document |
+| `PUT /me/preferences.json` | replaces them | the document as it was kept |
 | `GET /login?t={word}` | spends a login link and seats the browser | `303` to `/`, with a cookie |
 | `GET /logout` | forgets this browser | `303` to `/` |
-| `GET /me.json` | who is looking, and what they may be offered | see below |
 
-Tile coordinates may be negative, and one tile is exactly one terrain region.
-Tiles are rendered when first asked for and then kept, so starting costs nothing
-and only the part of the world someone looks at is ever drawn.
+Level 0 is one pixel per block and each level above covers twice as much world;
+coordinates may be negative, and one level 0 tile is exactly one terrain region.
+Level 0 is rendered when first asked for and then kept, so starting costs nothing
+and only the part of the world someone looks at is ever drawn. Every level above
+it is stored, because a coarse tile is made of four of the level below and making
+one on demand would make every tile beneath it.
+
+The style and the scripts carry the build's version in their address and are
+cached forever against it, so a browser fetches them once per release rather than
+carrying them inside every page load — the page itself is a few kilobytes and is
+never cached.
 
 ### `GET /info.json`
 
@@ -154,8 +193,8 @@ collecting.
 ### `GET /me.json`
 
 ```json
-{"Name":"ada","Uid":"…","MarkersPublic":false,"Waiting":0}
-{"Name":null,"Uid":null,"MarkersPublic":false,"Waiting":0}
+{"Name":"ada","Uid":"…","MarkersPublic":false,"PublicMarkersEditable":false,"Waiting":0}
+{"Name":null,"Uid":null,"MarkersPublic":false,"PublicMarkersEditable":false,"Waiting":0}
 ```
 
 The same shape logged in or not, so a page never has to tell an error from a
@@ -164,8 +203,31 @@ marker form's private box starts. `Waiting` is how many markers the game server
 has not collected, which is how a form whose marker has not appeared tells a game
 server that has stopped from one that is merely slow.
 
-**The map itself stays public and unauthenticated**, and a session decides whose
-markers a page is sent and what it may act on.
+**The map itself stays public**, and a session decides whose markers a page is
+sent and what it may act on.
+
+### `GET /block.json?x={x}&z={z}`
+
+```json
+{"x":512000,"z":512000,"state":"painted","block":13710,"code":"game:soil-low-normal",
+ "name":"Low fertility soil (Grassy)","y":114,"temperature":3.76,"rainfall":0.4}
+{"x":-100,"z":-100,"state":"unmapped"}
+```
+
+`state` is how the column read against the palette, and it is the whole of what
+the page has to say about it: `painted` is a colour, `blank` is a block the
+palette knows has nothing to draw, `unknown` is one it has never heard of — drawn
+loud on purpose, because that is a bug in the export rather than something to hide
+behind a plausible grey — and `unmapped` is ground nobody has exported.
+
+Every field after `state` is absent where there is nothing to say. This is the
+same reading the renderer made for that pixel, so the map never names a block it
+did not draw. `temperature` is degrees celsius and `rainfall` runs from nought to
+one, both from the climate the world was generated with rather than today's
+weather.
+
+Both coordinates or neither: half a position names nowhere, and defaulting the
+other half would name somewhere else entirely.
 
 ### Logging in
 
@@ -292,6 +354,9 @@ the file — the format has one owner and it is the service.
 | `portraits/{uid in hex}.png` | on that player's every join, and 30s after their character last changed | a picture of that player's seraph, drawn on their own machine |
 | `service.json` | **by the service**, as it binds | the addresses the map answers on, the one worth giving somebody else first. Removed when the mod stops the service, so nothing hands a player the address of a map that is gone |
 | `api.json` | **by the service**, as it binds | the port and token of the API channel, mode `0600`. Removed when the mod stops the service — a port that has been taken over by something else answers, and there is no telling what |
+| `blocknames.json` | at asset load | what the game calls each block, keyed on the same code the palette is, so that marking something can start from its name |
+| `preferences.json` | **by the service**, when somebody changes theirs | each person's marker presets and defaults, against their uid |
+| `tiles/{level}/…` | **by the service**, as regions change | every zoom level above the finest, which is drawn on demand and not stored |
 
 
 
@@ -301,15 +366,30 @@ rebuilt as players explore. There is no upgrade path and no backup of the old
 file, deliberately: a reader for every shape the format has ever had is permanent
 cost for maps that are days old.
 
-A region is 8×8 chunks, which at a chunk edge of 32 is 256 blocks — exactly one
-tile. Each is a gzip stream of fixed-size records after a 20-byte header,
-documented in the service's `src/columns.rs` and in the mod's `Regions.cs`. On
-real exports the compression runs between five and eight times.
+A region is 16×16 chunks, which at a chunk edge of 32 is 512 blocks — exactly one
+tile at the finest zoom level, and the same square the game itself calls a map
+region. Region file, tile and game region are one thing, which is a whole class of
+off-by-one that cannot happen. Each is a gzip stream of fixed-size records after a
+20-byte header, documented in the service's `src/columns.rs` and in the mod's
+`Regions.cs`. On real exports the compression runs between five and eight times.
 
-The service watches the `columns` directory's timestamp, and reloads only the
-regions whose own timestamps moved. Every file is written beside itself and
-renamed into place, so a reader never sees half of one — which is also what makes
-the directory timestamp a reliable signal.
+The service watches the `columns` directory's timestamp and reloads only the
+regions whose own timestamps moved, and watches `palette.json` and
+`blocknames.json` the same way.
+
+**Every file here is written beside itself and renamed into place**, whichever
+half writes it, so a reader never sees half of one — which is also what makes a
+timestamp a reliable signal. That matters most for the two large ones: the palette
+is the better part of a megabyte and is read by a service checking it every
+second, so a write straight over the top of it can be read mid-way. A file that
+does read mid-way is put back to unseen rather than recorded as read, so the next
+second tries again.
+
+Nothing is written where the bytes would not differ. A palette rebuilt from
+unchanged assets, a name table for a block set nobody touched, an icon a second
+admin sent — all of those are compared and skipped, because the service treats a
+palette arriving as every colour having possibly moved and drops every tile it
+holds.
 
 `live.json` is no longer written or read, and the mod deletes one left by an older
 build on start. It briefly survived as a fallback and that was a mistake: a mod

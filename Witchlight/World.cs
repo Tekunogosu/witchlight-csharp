@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using Newtonsoft.Json;
-using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
 namespace Witchlight;
@@ -54,6 +53,27 @@ public class WorldFacts
     }
 
     /// <summary>
+    /// One line for `/witchlight status`.
+    ///
+    /// Both halves have to be right and neither is visible in game: the world has
+    /// to have a spawn point, and it has to have reached the map. A map counting
+    /// from absolute zero looks exactly like one counting from spawn until
+    /// somebody compares a coordinate against their own screen.
+    /// </summary>
+    public static string Describe(ICoreServerAPI api, string exports)
+    {
+        if (Spawn(api) is not { } spawn)
+        {
+            return "counts from: absolute zero — the world has no readable spawn point";
+        }
+
+        return $"counts from: spawn at {spawn.X}, {spawn.Z}"
+            + (File.Exists(Path.Combine(exports, "world.json"))
+                ? ""
+                : "  (world.json not written — the map counts from absolute zero)");
+    }
+
+    /// <summary>
     /// Writes them where the map service will find them.
     ///
     /// Called once the world is ready rather than when the mod starts: spawn is
@@ -82,11 +102,8 @@ public class WorldFacts
                 Name = api.WorldManager.SaveGame?.WorldName ?? "",
             };
 
-            Directory.CreateDirectory(exports);
-            var path = Path.Combine(exports, "world.json");
-            var temporary = path + ".part";
-            File.WriteAllText(temporary, JsonConvert.SerializeObject(facts));
-            File.Move(temporary, path, overwrite: true);
+            Disk.Write(
+                Path.Combine(exports, "world.json"), JsonConvert.SerializeObject(facts));
 
             api.Logger.Notification(
                 "[witchlight] the map counts from spawn at {0}, {1}", spawn.Value.X, spawn.Value.Z);

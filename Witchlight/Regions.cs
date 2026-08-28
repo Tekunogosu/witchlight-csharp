@@ -51,9 +51,15 @@ public static class Regions
     private static readonly int Shift = BitOperations.Log2(ChunksPerEdge);
 
     private const string Magic = "MSQR";
+
     /// <summary>Magic 4, version 2, edge 2, regionX 4, regionZ 4, chunks 4.</summary>
     private const int HeaderBytes = 20;
+
+    /// <summary>Chunk x 4, chunk z 4, season 1, reserved 1.</summary>
     private const int RecordHeaderBytes = 10;
+
+    /// <summary>Block id 2, surface y 2, temperature 1, rainfall 1.</summary>
+    private const int EntryBytes = 6;
 
     /// <summary>Which region a chunk belongs to. Negative coordinates floor, as they must.</summary>
     public static (int, int) Of(int chunkX, int chunkZ)
@@ -67,6 +73,96 @@ public static class Regions
     public static string PathOf(string dir, int regionX, int regionZ)
     {
         return Path.Combine(dir, $"r.{regionX}.{regionZ}.msqr");
+    }
+
+    /// <summary>
+    /// A region file's header, once it has been checked.
+    ///
+    /// Three readers were each spelling out the same six comparisons against the
+    /// same magic bytes and version — and a fourth would have been a fourth chance
+    /// to miss one and read a file this build cannot read. It is one question with
+    /// one answer: is this a region file this build understands, and if so where
+    /// do its records start.
+    /// </summary>
+    private readonly struct Header
+    {
+        private Header(byte[] data, int recordBytes)
+        {
+            Data = data;
+            RecordBytes = recordBytes;
+        }
+
+        public byte[] Data { get; }
+
+        /// <summary>One record, header and columns together.</summary>
+        public int RecordBytes { get; }
+
+        /// <summary>Where the first record starts.</summary>
+        public static int First => HeaderBytes;
+
+        /// <summary>
+        /// Reads and checks one, or nothing where the file is not a region this
+        /// build can read — which covers a missing file, a truncated one, an older
+        /// format, and one written for a different chunk size.
+        /// </summary>
+        public static Header? Of(string path, int edge)
+        {
+            var data = Bytes(path);
+            if (data is null
+                || data.Length < HeaderBytes
+                || data[0] != 'M' || data[1] != 'S' || data[2] != 'Q' || data[3] != 'R'
+                || BitConverter.ToUInt16(data, 4) != Version
+                || BitConverter.ToUInt16(data, 6) != edge)
+            {
+                return null;
+            }
+
+            return new Header(data, RecordHeaderBytes + edge * edge * EntryBytes);
+        }
+
+        /// <summary>
+        /// The format version a file claims, whatever version that is. What
+        /// decides whether a map on disk has to be thrown away, so it deliberately
+        /// does not care whether this build could read it.
+        /// </summary>
+        public static int? VersionOf(string path)
+        {
+            var data = Bytes(path);
+            return data is null
+                   || data.Length < HeaderBytes
+                   || data[0] != 'M' || data[1] != 'S' || data[2] != 'Q' || data[3] != 'R'
+                ? null
+                : BitConverter.ToUInt16(data, 4);
+        }
+
+        /// <summary>Where each record in this file begins.</summary>
+        public IEnumerable<int> Records()
+        {
+            for (var at = First; at + RecordBytes <= Data.Length; at += RecordBytes)
+            {
+                yield return at;
+            }
+        }
+
+        /// <summary>Which chunk one record is for.</summary>
+        public (int X, int Z) ChunkAt(int at) =>
+            (BitConverter.ToInt32(Data, at), BitConverter.ToInt32(Data, at + 4));
+
+        /// <summary>Where the year had reached for one record's chunk.</summary>
+        public byte SeasonAt(int at) => Data[at + 8];
+
+        private static byte[]? Bytes(string path)
+        {
+            try
+            {
+                return File.Exists(path) ? Decompress(path) : null;
+            }
+            catch (Exception)
+            {
+                // One bad region, not a bad map.
+                return null;
+            }
+        }
     }
 
     /// <summary>One chunk as it is stored: where the year is, and its columns.</summary>
@@ -90,38 +186,17 @@ public static class Regions
     public static Dictionary<(int, int), Stored> Read(string path, int edge)
     {
         var chunks = new Dictionary<(int, int), Stored>();
-        if (!File.Exists(path))
+        if (Header.Of(path, edge) is not { } header)
         {
             return chunks;
         }
 
-        try
+        var size = edge * edge * EntryBytes;
+        foreach (var at in header.Records())
         {
-            var data = Decompress(path);
-            var size = edge * edge * 6;
-            if (data.Length < HeaderBytes
-                || data[0] != 'M' || data[1] != 'S' || data[2] != 'Q' || data[3] != 'R'
-                || BitConverter.ToUInt16(data, 4) != Version
-                || BitConverter.ToUInt16(data, 6) != edge)
-            {
-                return chunks;
-            }
-
-            var at = HeaderBytes;
-            while (at + RecordHeaderBytes + size <= data.Length)
-            {
-                var cx = BitConverter.ToInt32(data, at);
-                var cz = BitConverter.ToInt32(data, at + 4);
-                var season = data[at + 8];
-                var record = new byte[size];
-                Array.Copy(data, at + RecordHeaderBytes, record, 0, size);
-                chunks[(cx, cz)] = new Stored(season, record);
-                at += RecordHeaderBytes + size;
-            }
-        }
-        catch (Exception)
-        {
-            chunks.Clear();
+            var record = new byte[size];
+            Array.Copy(header.Data, at + RecordHeaderBytes, record, 0, size);
+            chunks[header.ChunkAt(at)] = new Stored(header.SeasonAt(at), record);
         }
 
         return chunks;
@@ -138,14 +213,12 @@ public static class Regions
         int regionZ,
         IReadOnlyDictionary<(int, int), Stored> chunks)
     {
-        Directory.CreateDirectory(dir);
-        var path = PathOf(dir, regionX, regionZ);
-        var temporary = path + ".part";
-
-        using (var file = File.Create(temporary))
-        using (var gzip = new GZipStream(file, CompressionLevel.Optimal))
-        using (var writer = new BinaryWriter(gzip))
+        Disk.Replace(PathOf(dir, regionX, regionZ), into =>
         {
+            using var file = File.Create(into);
+            using var gzip = new GZipStream(file, CompressionLevel.Optimal);
+            using var writer = new BinaryWriter(gzip);
+
             foreach (var c in Magic)
             {
                 writer.Write((byte)c);
@@ -164,9 +237,7 @@ public static class Regions
                 writer.Write((byte)0);
                 writer.Write(stored.Record);
             }
-        }
-
-        File.Move(temporary, path, overwrite: true);
+        });
     }
 
     /// <summary>Every region file present, by its coordinates.</summary>
@@ -200,31 +271,17 @@ public static class Regions
     public static Dictionary<(int, int), byte> Index(string dir, int edge)
     {
         var index = new Dictionary<(int, int), byte>();
-        var size = edge * edge * 6;
 
         foreach (var (_, path) in All(dir))
         {
-            try
+            if (Header.Of(path, edge) is not { } header)
             {
-                var data = Decompress(path);
-                if (data.Length < HeaderBytes
-                    || data[0] != 'M' || data[1] != 'S' || data[2] != 'Q' || data[3] != 'R'
-                    || BitConverter.ToUInt16(data, 4) != Version
-                    || BitConverter.ToUInt16(data, 6) != edge)
-                {
-                    continue;
-                }
-
-                var at = HeaderBytes;
-                while (at + RecordHeaderBytes + size <= data.Length)
-                {
-                    index[(BitConverter.ToInt32(data, at), BitConverter.ToInt32(data, at + 4))] = data[at + 8];
-                    at += RecordHeaderBytes + size;
-                }
+                continue;
             }
-            catch (Exception)
+
+            foreach (var at in header.Records())
             {
-                // One bad region, not a bad map.
+                index[header.ChunkAt(at)] = header.SeasonAt(at);
             }
         }
 
@@ -284,7 +341,7 @@ public static class Regions
 
         foreach (var (_, path) in All(dir))
         {
-            var version = VersionOf(path);
+            var version = Header.VersionOf(path);
             if (version != Version)
             {
                 return version is null
@@ -294,25 +351,6 @@ public static class Regions
         }
 
         return null;
-    }
-
-    /// <summary>The format version a region file claims, or null if it cannot say.</summary>
-    private static int? VersionOf(string path)
-    {
-        try
-        {
-            var data = Decompress(path);
-            if (data.Length < HeaderBytes
-                || data[0] != 'M' || data[1] != 'S' || data[2] != 'Q' || data[3] != 'R')
-            {
-                return null;
-            }
-            return BitConverter.ToUInt16(data, 4);
-        }
-        catch (Exception)
-        {
-            return null;
-        }
     }
 
     private static byte[] Decompress(string path)

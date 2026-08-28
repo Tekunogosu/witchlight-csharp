@@ -8,6 +8,56 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.21.0
+
+**Deploy note:** nothing to do by hand. The map format has not changed and no map
+is cleared; the minor moves because both halves were reworked together and should
+be deployed together.
+
+**Marker visibility could erase itself.** Every world save handed the store the
+live waypoint list so that decisions about deleted markers went with them — and
+where the waypoint layer could not be read, it was handed an empty list instead,
+which reads as "every marker has been deleted". One save landing in that state
+took every private marker on the server back to whatever the operator's default
+says. It is told nothing at all now when the list cannot be read, and forgets
+nothing.
+
+**Every file is written whole.** `palette.json` is the better part of a megabyte
+and was written straight over the top of itself, so the map service — which
+watches it every second — could read half of one. It then recorded the file as
+seen and moved on, and on a settled server nothing would ever move that timestamp
+again, so the colours stayed missing until a mod set changed. Every write now
+goes beside the file and is renamed into place, and every write is still skipped
+where the bytes would not differ.
+
+**One place decides whether an undecided marker is private.** Three separate
+places each negated `markers_public` for themselves — the web feed, the in-game
+share, and the collector that applies web edits — which is three chances to get
+the polarity backwards and show somebody's markers to a server. `Settings.cs` now
+owns every question about what the operator wants, and every caller is a thin
+read of it.
+
+**The status line says what the palette should be as well as what it is.** A
+palette built for a different block registry now names both fingerprints and says
+STALE, rather than printing one number and leaving the reader to compare it with
+another line. Icon and colour-map exports report how many exist as well as how
+many were written, so "0 written" on a restart no longer reads like a server that
+found none.
+
+**The two big files are gone.** `WitchlightSystem.cs` was 1,384 lines doing six
+jobs; it is 400 doing one — wiring — with the export, the three client exchanges,
+the command surface and the fault reporter each in a type of its own.
+`WitchlightClient.cs` split the same way. `Palette.cs` became a palette, a
+builder, a texture-colour utility, a shape reader and a colour-map export.
+`Wanted` and `Edit` were the same nine fields written twice and are one type. The
+region header was checked in three places with the same six comparisons and is
+checked in one.
+
+**Smaller things.** A stray platform warning is gone, the log's running-average
+code no longer passes four numbers by reference, four doc comments that had
+drifted onto the wrong method are back where they belong, and `README.md` has a
+table saying which file holds what.
+
 ## 0.20.2
 
 Viewer tweaks; the mod is unchanged and the version moves only to keep the halves

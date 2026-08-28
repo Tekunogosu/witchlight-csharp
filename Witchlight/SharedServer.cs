@@ -1,8 +1,5 @@
-using System.Collections.Generic;
 using System.Linq;
-using Vintagestory.API.Common;
 using Vintagestory.API.Server;
-using Vintagestory.GameContent;
 
 namespace Witchlight;
 
@@ -35,7 +32,7 @@ public static class SharedServer
         // Read each time rather than held, so an operator changing their mind
         // takes effect on the next send instead of the next restart — the same
         // rule the announcement follows.
-        var byDefault = !ServiceProcess.MarkersPublic(ServiceProcess.ConfigPath);
+        var byDefault = Settings.MarkersPrivateByDefault;
 
         foreach (var waypoint in layer.Waypoints.ToList())
         {
@@ -58,22 +55,11 @@ public static class SharedServer
                 Title = waypoint.Title ?? "",
                 Icon = string.IsNullOrEmpty(waypoint.Icon) ? "circle" : waypoint.Icon,
                 Color = waypoint.Color,
-                Owner = OwnerName(api, waypoint.OwningPlayerUid),
+                Owner = Markers.OwnerName(api, waypoint.OwningPlayerUid),
             });
         }
 
         return shared;
-    }
-
-    private static string OwnerName(ICoreServerAPI api, string? uid)
-    {
-        if (string.IsNullOrEmpty(uid))
-        {
-            return "";
-        }
-
-        var online = api.World.PlayerByUid(uid);
-        return online?.PlayerName ?? api.PlayerData.GetPlayerDataByUid(uid)?.LastKnownPlayername ?? "";
     }
 
     public static void SendTo(ICoreServerAPI api, IServerPlayer player, Visibility visibility)

@@ -46,22 +46,12 @@ Every player receives every marker they do not own, every 15 seconds, and client
 discard everything they already hold. Fine at a handful of markers; pointless
 repetition at a few thousand. Key on the waypoint guid and send changes only.
 
-## Give the map zoom levels
-
-Tiles are drawn at one pixel per block at every zoom, and the browser scales them.
-The number on screen therefore grows as the square of how far out the viewer is:
-about fifty to fit a world, twelve thousand at 0.05 pixels per block, and eighty
-thousand at the zoom-out limit — which is minutes of rendering and a browser
-holding eighty thousand images. Threads divide that; they do not fix it.
-
-A pyramid, each level half the resolution of the one below, keeps the count near
-constant at every zoom. The viewer also asks for tiles outside the world's own
-bounds, which is most of that eighty thousand and is a much smaller fix.
-
-Its tile cache is also unbounded.
-
 ## Scope markers to groups
 
-Every marker is shared with everyone. The export builds a packet per player in
-`SharedServer.For(api, player)`, and per-player filtering belongs there — as does
-the decision to stop sending owner uids to clients that have no use for them.
+A marker is its owner's or everybody's, and there is nothing between the two. The
+per-player filtering already happens in `SharedServer.For` and in the service's
+`Live::body`, so a group is a third answer to a question both of them already ask
+rather than a new mechanism — what is missing is somewhere to keep who is in one,
+and a way for a player to say so without leaving the game.
+
+Sending owner uids to clients that have no use for them belongs in the same pass.

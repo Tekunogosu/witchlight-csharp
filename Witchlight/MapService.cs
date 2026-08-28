@@ -59,19 +59,56 @@ public sealed class MapService : IDisposable
     private volatile Endpoint? _endpoint;
 
     /// <summary>
-    /// What happened to the last post of each kind, for `/witchlight status`.
+    /// One kind of thing this posts, and everything that is true of it alone.
     ///
-    /// Kept apart on purpose. One reading for both was worse than useless: players
-    /// go every two seconds and markers every fifteen, so a succeeding player post
-    /// overwrote a failing marker post almost immediately and the line read
-    /// healthy while half the data was going nowhere.
+    /// Kept apart on purpose. One reading for both was worse than useless:
+    /// players go every two seconds and markers every fifteen, so a succeeding
+    /// player post overwrote a failing marker post almost immediately and the
+    /// status line read healthy while half the data was going nowhere.
+    ///
+    /// A value rather than a boolean threaded through three methods. The old
+    /// shape worked out which feed it was by comparing the path against a string
+    /// literal, and every method that reported on one took an `isPlayers` and
+    /// branched on it twice.
     /// </summary>
-    public string PlayersHealth { get; private set; } = "nothing sent yet";
+    private sealed class Feed
+    {
+        private int _sending;
 
-    public string MarkersHealth { get; private set; } = "nothing sent yet";
+        public Feed(string name, string path)
+        {
+            Name = name;
+            Path = path;
+        }
 
-    private int _sendingPlayers;
-    private int _sendingMarkers;
+        /// <summary>What to call it when something goes wrong.</summary>
+        public string Name { get; }
+
+        /// <summary>Where it is posted.</summary>
+        public string Path { get; }
+
+        /// <summary>What happened to the last post of this kind.</summary>
+        public string Health { get; set; } = "nothing sent yet";
+
+        /// <summary>
+        /// Takes the right to post, or says somebody else already has it.
+        ///
+        /// One at a time: a position that arrived late is worse than one skipped,
+        /// since another follows two seconds behind.
+        /// </summary>
+        public bool Claim() => Interlocked.CompareExchange(ref _sending, 1, 0) == 0;
+
+        /// <summary>Lets the next post of this kind start.</summary>
+        public void Release() => Interlocked.Exchange(ref _sending, 0);
+    }
+
+    private readonly Feed _players = new("players", "/live/players");
+    private readonly Feed _markers = new("markers", "/live/markers");
+
+    public string PlayersHealth => _players.Health;
+
+    public string MarkersHealth => _markers.Health;
+
     private int _collecting;
     private readonly TimeSpan _resendMarkers;
     private string _sentMarkers = "";
@@ -100,6 +137,13 @@ public sealed class MapService : IDisposable
 
     /// <summary>Where the connection file is. The service writes it as it binds.</summary>
     public static string ConnectionPath(string exports) => Path.Combine(exports, "api.json");
+
+    /// <summary>
+    /// Where to post, reading the connection file again if the last look found
+    /// nothing. Three callers asked this the same way and each spelled out the
+    /// assignment back into the field.
+    /// </summary>
+    private Endpoint? Where() => _endpoint ?? (_endpoint = Resolve());
 
     /// <summary>
     /// Where to post, from the environment if an operator said, and otherwise from
@@ -157,7 +201,7 @@ public sealed class MapService : IDisposable
     /// </summary>
     public async Task<string?> Link(string uid, string name, string where)
     {
-        var endpoint = _endpoint ?? (_endpoint = Resolve());
+        var endpoint = Where();
         if (endpoint is null)
         {
             return null;
@@ -219,7 +263,7 @@ public sealed class MapService : IDisposable
 
         try
         {
-            var endpoint = _endpoint ?? (_endpoint = Resolve());
+            var endpoint = Where();
             if (endpoint is null)
             {
                 return null;
@@ -253,7 +297,7 @@ public sealed class MapService : IDisposable
     }
 
     /// <summary>Who is online and where. Held in memory by the service.</summary>
-    public void Players(string json) => Post("/live/players", json, ref _sendingPlayers);
+    public void Players(string json) => Post(_players, json);
 
     /// <summary>
     /// Every marker, when they are not what was sent last.
@@ -278,71 +322,31 @@ public sealed class MapService : IDisposable
 
         // Recorded when it lands, not when it is attempted. A post dropped because
         // the last one is still in flight would otherwise be remembered as sent.
-        Post("/live/markers", json, ref _sendingMarkers);
+        Post(_markers, json);
     }
 
-    private void Post(string path, string json, ref int sending)
+    private void Post(Feed feed, string json)
     {
-        if (Interlocked.CompareExchange(ref sending, 1, 0) != 0)
+        if (!feed.Claim())
         {
             return;
         }
-
-        // Captured by reference is not possible for a field in a lambda, so the
-        // flag is cleared through a local copy of which one it was.
-        var isPlayers = path == "/live/players";
 
         _ = Task.Run(async () =>
         {
             // Read again where the last attempt found nothing. The service may
             // simply not have finished starting; it is the mod that started it.
-            var endpoint = _endpoint ?? (_endpoint = Resolve());
+            var endpoint = Where();
             if (endpoint is null)
             {
-                Complain(isPlayers, $"no service yet at {ConnectionPath(_exports)}");
-                Done(isPlayers);
+                Complain(feed, $"no service yet at {ConnectionPath(_exports)}");
+                feed.Release();
                 return;
             }
 
             try
             {
-                using var content = new StringContent(json, Encoding.UTF8, "application/json");
-                using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + path)
-                {
-                    Content = content,
-                };
-                message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
-
-                var reply = await _client.SendAsync(message).ConfigureAwait(false);
-                if (reply.IsSuccessStatusCode)
-                {
-                    if (isPlayers)
-                    {
-                        PlayersHealth = $"reaching {endpoint.Url}";
-                    }
-                    else
-                    {
-                        _sentMarkers = json;
-                        _markersSentAt = DateTime.UtcNow;
-                        MarkersHealth = $"reaching {endpoint.Url}, {json.Length} bytes accepted";
-                    }
-
-                    if (_complained)
-                    {
-                        _log.Notification("[witchlight] the map service is taking live data again");
-                        _complained = false;
-                    }
-                }
-                else
-                {
-                    // A rejected token means the service restarted and minted a
-                    // new one, which is the same fix as a refused connection.
-                    if (reply.StatusCode == HttpStatusCode.Unauthorized)
-                    {
-                        _endpoint = null;
-                    }
-                    Complain(isPlayers, $"refused with {(int)reply.StatusCode}");
-                }
+                await Send(feed, endpoint, json).ConfigureAwait(false);
             }
             catch (Exception error)
             {
@@ -350,40 +354,55 @@ public sealed class MapService : IDisposable
                 // and the game does not depend on it. Its address is dropped with
                 // it, so the next tick reads where the next one bound.
                 _endpoint = null;
-                Complain(isPlayers, $"could not reach {endpoint.Url}: {error.Message}");
+                Complain(feed, $"could not reach {endpoint.Url}: {error.Message}");
             }
             finally
             {
-                Done(isPlayers);
+                feed.Release();
             }
         });
     }
 
-    /// <summary>Lets the next post of this kind start.</summary>
-    private void Done(bool isPlayers)
+    private async Task Send(Feed feed, Endpoint endpoint, string json)
     {
-        if (isPlayers)
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + feed.Path)
         {
-            Interlocked.Exchange(ref _sendingPlayers, 0);
+            Content = content,
+        };
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
+
+        var reply = await _client.SendAsync(message).ConfigureAwait(false);
+        if (!reply.IsSuccessStatusCode)
+        {
+            // A rejected token means the service restarted and minted a new one,
+            // which is the same fix as a refused connection.
+            if (reply.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                _endpoint = null;
+            }
+            Complain(feed, $"refused with {(int)reply.StatusCode}");
+            return;
         }
-        else
+
+        if (feed == _markers)
         {
-            Interlocked.Exchange(ref _sendingMarkers, 0);
+            _sentMarkers = json;
+            _markersSentAt = DateTime.UtcNow;
+        }
+
+        feed.Health = $"reaching {endpoint.Url}, {json.Length} bytes accepted";
+        if (_complained)
+        {
+            _log.Notification("[witchlight] the map service is taking live data again");
+            _complained = false;
         }
     }
 
     /// <summary>Says it once, and says when it stops being true.</summary>
-    private void Complain(bool isPlayers, string what)
+    private void Complain(Feed feed, string what)
     {
-        if (isPlayers)
-        {
-            PlayersHealth = what;
-        }
-        else
-        {
-            MarkersHealth = what;
-        }
-
+        feed.Health = what;
         if (_complained)
         {
             return;
@@ -392,7 +411,7 @@ public sealed class MapService : IDisposable
         _complained = true;
         _log.Warning(
             "[witchlight] {0}: {1} — that half will not show on the map until it is back",
-            isPlayers ? "players" : "markers",
+            feed.Name,
             what);
     }
 

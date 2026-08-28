@@ -146,6 +146,25 @@ public static class Markers
         return publicEditable && !isPrivate;
     }
 
+    /// <summary>
+    /// Who owns a marker, by name.
+    ///
+    /// Offline owners are looked up in the player data, so a marker still says
+    /// whose it is when they are not on. Two places worked this out separately —
+    /// the web feed and the in-game share — and a name is a name whichever asks.
+    /// </summary>
+    public static string OwnerName(ICoreServerAPI api, string? uid)
+    {
+        if (string.IsNullOrEmpty(uid))
+        {
+            return "";
+        }
+
+        return api.World.PlayerByUid(uid)?.PlayerName
+            ?? api.PlayerData.GetPlayerDataByUid(uid)?.LastKnownPlayername
+            ?? "";
+    }
+
     /// <summary>The waypoint with this guid, or null where there is none.</summary>
     public static Waypoint? ByGuid(ICoreAPI api, string guid)
     {

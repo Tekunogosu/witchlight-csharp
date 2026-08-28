@@ -354,6 +354,33 @@ server archive works exactly the same, it has just carried a map service it will
 never run. Mods load at
 startup, so deploying means restarting.
 
+## How it is laid out
+
+One subject to a file, and a utility never sits inside the system that first
+needed it. Two mod systems start, one per side, and neither of them decides
+anything — every judgement is in a type of its own that they wire together.
+
+| | |
+|---|---|
+| `WitchlightSystem.cs` `ServerCommands.cs` | the server side: what runs, when, and what an operator can type |
+| `WitchlightClient.cs` `ClientPortrait.cs` `ClientSupplies.cs` | the client side: what it draws and what it is asked for |
+| `Exporter.cs` `Columns.cs` `Regions.cs` `Dirty.cs` | reading the surface and writing it |
+| `PaletteExchange.cs` `IconExchange.cs` `PortraitExchange.cs` | the three things only a client can supply |
+| `PaletteBuilder.cs` `Palette.cs` `BlockShapes.cs` `ColourMaps.cs` `BlockNames.cs` | what a block looks like |
+| `MapService.cs` `ServiceProcess.cs` `BundledService.cs` `Settings.cs` | the other half: talking to it, running it, and what the operator set |
+| `Live.cs` `Markers.cs` `Visibility.cs` `Pending.cs` `SharedServer.cs` `SharedMarkerLayer.cs` | markers, and who may see them |
+| `Shared.cs` `PaletteShare.cs` `IconShare.cs` `PortraitShare.cs` | what travels between the two sides, and how it is sliced to fit |
+| `PortraitCapture.cs` `PortraitWatch.cs` | drawing a player, which only their own machine can do |
+| `Disk.cs` `TextureColours.cs` `Faults.cs` `Fingerprint.cs` `Icons.cs` `Portraits.cs` `World.cs` `Commands.cs` | utilities, which know nothing about this mod's lifecycle |
+
+Two of those are worth knowing before changing anything. **`Disk.cs` owns every
+write**: a file is written only when it would differ, and always through a
+temporary renamed into place, because the map service reads all of it while the
+server runs. **`Settings.cs` owns every question about what the operator wants**,
+including what a marker nobody has decided about is — three places used to
+negate that setting separately, which is three chances to show somebody's markers
+to a server.
+
 ## Known gaps
 
 `TODO.md` lists what is missing or fragile, including the palette transfer's size

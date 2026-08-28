@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using SkiaSharp;
 using Vintagestory.API.Client;
 using Vintagestory.API.MathTools;
@@ -239,6 +241,75 @@ public sealed class PortraitCapture : IRenderer
     }
 
     /// <summary>
+    /// The box around everything drawn in a band of rows.
+    ///
+    /// One scan, asked twice: once of the whole canvas to find the figure, and
+    /// once of the top of the figure to find the head. Both were written out in
+    /// full, with the same four comparisons and the same "nothing was drawn"
+    /// sentinel spelled differently each time.
+    /// </summary>
+    private readonly struct Drawn
+    {
+        private Drawn(int left, int right, int top, int bottom)
+        {
+            Left = left;
+            Right = right;
+            Top = top;
+            Bottom = bottom;
+        }
+
+        public int Left { get; }
+        public int Right { get; }
+        public int Top { get; }
+        public int Bottom { get; }
+
+        public int Width => Right - Left + 1;
+        public int Height => Bottom - Top + 1;
+        public int MiddleX => (Left + Right) / 2;
+
+        /// <summary>Whatever is opaque between two rows, or nothing at all.</summary>
+        public static Drawn? In(byte[] bgra, int fromRow, int uptoRow)
+        {
+            int left = Canvas, right = -1, top = Canvas, bottom = -1;
+
+            for (var y = Math.Max(0, fromRow); y < Math.Min(Canvas, uptoRow); y++)
+            {
+                for (var x = 0; x < Canvas; x++)
+                {
+                    if (bgra[(y * Canvas + x) * 4 + 3] == 0)
+                    {
+                        continue;
+                    }
+
+                    if (x < left) left = x;
+                    if (x > right) right = x;
+                    if (y < top) top = y;
+                    if (y > bottom) bottom = y;
+                }
+            }
+
+            return right < 0 ? null : new Drawn(left, right, top, bottom);
+        }
+
+        /// <summary>
+        /// Which sides of the canvas the figure ran off, if any.
+        ///
+        /// Worth saying: a figure touching an edge was cut off by it, and what is
+        /// cropped from it is a piece of a seraph rather than a small one — a
+        /// difference invisible in the picture that decides where to look.
+        /// </summary>
+        public string Edges()
+        {
+            var against = new List<string>();
+            if (Left == 0) against.Add("left");
+            if (Right == Canvas - 1) against.Add("right");
+            if (Top == 0) against.Add("top");
+            if (Bottom == Canvas - 1) against.Add("bottom");
+            return against.Count == 0 ? "" : $", CUT OFF at the {string.Join(" and ", against)}";
+        }
+    }
+
+    /// <summary>
     /// Finds the seraph in the buffer and crops to its head and shoulders.
     ///
     /// Where in the canvas it lands depends on numbers this cannot know for
@@ -250,81 +321,27 @@ public sealed class PortraitCapture : IRenderer
     /// </summary>
     private static byte[]? Frame(byte[] bgra, out string said)
     {
-        int left = Canvas, right = -1, top = Canvas, bottom = -1;
-        for (var y = 0; y < Canvas; y++)
-        {
-            for (var x = 0; x < Canvas; x++)
-            {
-                if (bgra[(y * Canvas + x) * 4 + 3] == 0)
-                {
-                    continue;
-                }
-                if (x < left) left = x;
-                if (x > right) right = x;
-                if (y < top) top = y;
-                if (y > bottom) bottom = y;
-            }
-        }
-
-        if (right < 0)
+        if (Drawn.In(bgra, 0, Canvas) is not { } figure)
         {
             said = $"the seraph drew nothing into a {Canvas}x{Canvas} canvas";
             return null;
         }
 
-        var width = right - left + 1;
-        var height = bottom - top + 1;
-
         // The head, which is the top of the figure: the first row drawn is the
         // crown, since the entity renderer turns the model half a turn about X and
         // this reads the rows back in the order they are stored.
-        var band = System.Math.Max(1, (int)(height * HeadShare));
-        var (headLeft, headRight) = ColumnsIn(bgra, top, top + band);
+        var side = Math.Max(1, (int)(figure.Height * HeadShare));
+        var head = Drawn.In(bgra, figure.Top, figure.Top + side);
 
         // Centred on the head's own columns rather than the figure's. A seraph in a
         // coat is wider at the shoulder than at the ear, and centring on the whole
         // of it walks the face off to one side.
-        var side = band;
-        var x0 = (headLeft + headRight) / 2 - side / 2;
-        var y0 = top - band / 12;
+        var x0 = (head?.MiddleX ?? Canvas / 2) - side / 2;
+        var y0 = figure.Top - side / 12;
 
-        // A figure touching an edge was cut off by it, and what is cropped from it
-        // is a piece of a seraph rather than a small one. Worth saying: the
-        // difference is invisible in the picture and decides where to look.
-        var against = Edges(left, right, top, bottom);
-        said = $"{width}x{height} found at {left},{top}, head {side}x{side} at {x0},{y0}{against}";
+        said = $"{figure.Width}x{figure.Height} found at {figure.Left},{figure.Top}, "
+            + $"head {side}x{side} at {x0},{y0}{figure.Edges()}";
         return Encode(bgra, x0, y0, side);
-    }
-
-    /// <summary>How far left and right anything is drawn between two rows.</summary>
-    private static (int Left, int Right) ColumnsIn(byte[] bgra, int from, int upto)
-    {
-        int left = Canvas, right = -1;
-        for (var y = System.Math.Max(0, from); y < System.Math.Min(Canvas, upto); y++)
-        {
-            for (var x = 0; x < Canvas; x++)
-            {
-                if (bgra[(y * Canvas + x) * 4 + 3] == 0)
-                {
-                    continue;
-                }
-                if (x < left) left = x;
-                if (x > right) right = x;
-            }
-        }
-
-        return right < 0 ? (0, Canvas - 1) : (left, right);
-    }
-
-    /// <summary>Which sides of the canvas the figure ran off, if any.</summary>
-    private static string Edges(int left, int right, int top, int bottom)
-    {
-        var against = new System.Collections.Generic.List<string>();
-        if (left == 0) against.Add("left");
-        if (right == Canvas - 1) against.Add("right");
-        if (top == 0) against.Add("top");
-        if (bottom == Canvas - 1) against.Add("bottom");
-        return against.Count == 0 ? "" : $", CUT OFF at the {string.Join(" and ", against)}";
     }
 
     private static FramebufferAttrs Attributes() => new("witchlight-portrait", Canvas, Canvas)
@@ -387,16 +404,16 @@ public sealed class PortraitCapture : IRenderer
 
             // Only the part of the row that is inside the canvas. The rest of it
             // stays as the bitmap was born: transparent.
-            var from = System.Math.Max(0, x0);
-            var upto = System.Math.Min(Canvas, x0 + side);
+            var from = Math.Max(0, x0);
+            var upto = Math.Min(Canvas, x0 + side);
             if (upto <= from)
             {
                 continue;
             }
 
-            System.Array.Clear(rows);
-            System.Buffer.BlockCopy(bgra, (line * Canvas + from) * 4, rows, (from - x0) * 4, (upto - from) * 4);
-            System.Runtime.InteropServices.Marshal.Copy(rows, 0, cut.GetPixels() + y * side * 4, side * 4);
+            Array.Clear(rows);
+            Buffer.BlockCopy(bgra, (line * Canvas + from) * 4, rows, (from - x0) * 4, (upto - from) * 4);
+            Marshal.Copy(rows, 0, cut.GetPixels() + y * side * 4, side * 4);
         }
 
         using var scaled = cut.Resize(

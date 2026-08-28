@@ -2,10 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
-using Vintagestory.API.Common;
-using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Server;
-using Vintagestory.GameContent;
 
 namespace Witchlight;
 
@@ -129,7 +126,7 @@ public static class Live
     /// <summary>Every marker, sorted by who may see it, as the service wants it.</summary>
     public static string WaypointsJson(ICoreServerAPI api, Visibility visibility)
     {
-        return JsonConvert.SerializeObject(Markers(api, visibility));
+        return JsonConvert.SerializeObject(Sorted(api, visibility));
     }
 
     /// <summary>
@@ -141,9 +138,9 @@ public static class Live
     /// that restarted has the palette back on the next post instead of needing to
     /// be told separately that it lost it.
     /// </summary>
-    public static LiveMarkers Markers(ICoreServerAPI api, Visibility visibility)
+    public static LiveMarkers Sorted(ICoreServerAPI api, Visibility visibility)
     {
-        var sorted = new LiveMarkers { Colors = Witchlight.Markers.Palette(api) };
+        var sorted = new LiveMarkers { Colors = Markers.Palette(api) };
         foreach (var marker in Waypoints(api, visibility))
         {
             if (!marker.Private)
@@ -176,8 +173,7 @@ public static class Live
         var players = new List<LivePlayer>();
         foreach (var player in api.World.AllOnlinePlayers)
         {
-            var position = player?.Entity?.Pos;
-            if (player is null || position is null)
+            if (player?.Entity?.Pos is not { } position)
             {
                 continue;
             }
@@ -212,7 +208,7 @@ public static class Live
     /// </summary>
     public static List<LiveWaypoint> Waypoints(ICoreServerAPI api, Visibility visibility)
     {
-        var layer = Witchlight.Markers.Layer(api);
+        var layer = Markers.Layer(api);
         if (layer?.Waypoints is null)
         {
             return new List<LiveWaypoint>();
@@ -221,7 +217,7 @@ public static class Live
         // Read each time rather than held, so an operator changing their mind
         // takes effect on the next post instead of the next restart — the same
         // rule the announcement and the in-game share both follow.
-        var byDefault = !ServiceProcess.MarkersPublic(ServiceProcess.ConfigPath);
+        var byDefault = Settings.MarkersPrivateByDefault;
 
         var waypoints = new List<LiveWaypoint>();
         foreach (var waypoint in layer.Waypoints.ToList())
@@ -235,14 +231,14 @@ public static class Live
             {
                 Title = waypoint.Title ?? "",
                 Icon = string.IsNullOrEmpty(waypoint.Icon) ? "circle" : waypoint.Icon,
-                Color = Witchlight.Markers.Hex(waypoint.Color),
+                Color = Markers.Hex(waypoint.Color),
                 X = Block(waypoint.Position.X),
                 Y = Block(waypoint.Position.Y),
                 Z = Block(waypoint.Position.Z),
-                Owner = NameOf(api, waypoint.OwningPlayerUid),
+                Owner = Markers.OwnerName(api, waypoint.OwningPlayerUid),
                 OwnerUid = waypoint.OwningPlayerUid ?? "",
                 Pinned = waypoint.Pinned,
-                Key = Witchlight.Markers.Key(waypoint),
+                Key = Markers.Key(waypoint),
                 Private = visibility.IsPrivate(waypoint, byDefault),
             });
         }
@@ -259,25 +255,5 @@ public static class Live
     /// the markers ask it here rather than each spelling it out.
     /// </summary>
     private static int Block(double at) => (int)Math.Floor(at);
-
-    /// <summary>
-    /// Who owns a marker. Offline owners are looked up in the player data, so a
-    /// marker still says whose it is when they are not on.
-    /// </summary>
-    private static string NameOf(ICoreServerAPI api, string? uid)
-    {
-        if (string.IsNullOrEmpty(uid))
-        {
-            return "";
-        }
-
-        var online = api.World.PlayerByUid(uid);
-        if (online is not null)
-        {
-            return online.PlayerName ?? "";
-        }
-
-        return api.PlayerData.GetPlayerDataByUid(uid)?.LastKnownPlayername ?? "";
-    }
 
 }

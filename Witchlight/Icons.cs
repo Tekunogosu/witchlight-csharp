@@ -25,12 +25,20 @@ public static class Icons
 {
     private const string AssetPath = "textures/icons/worldmap";
 
-    /// <summary>Writes every icon the server can see. Returns how many, and from where.</summary>
-    public static (int Written, string From) Export(ICoreAPI api, string exports)
+    /// <summary>
+    /// Writes every icon the server can see.
+    ///
+    /// Says how many were written, how many there are, and which mods they came
+    /// from. A restart on unchanged assets writes none, and "0 written" on its own
+    /// reads exactly like a server that found no icons at all — which is every
+    /// marker on the map drawn as a plain shape.
+    /// </summary>
+    public static (int Written, int Found, string From) Export(ICoreAPI api, string exports)
     {
         var dir = DirectoryIn(exports);
         var domains = new SortedSet<string>(StringComparer.Ordinal);
         var written = 0;
+        var found = 0;
 
         try
         {
@@ -54,9 +62,12 @@ public static class Icons
                     continue;
                 }
 
-                File.WriteAllBytes(Path.Combine(dir, name + ".svg"), data);
+                found++;
+                if (Disk.WriteBytes(Path.Combine(dir, name + ".svg"), data))
+                {
+                    written++;
+                }
                 domains.Add(asset.Location.Domain ?? "game");
-                written++;
             }
         }
         catch (Exception error)
@@ -64,7 +75,7 @@ public static class Icons
             api.Logger.Warning("[witchlight] could not write marker icons: {0}", error.Message);
         }
 
-        return (written, domains.Count == 0 ? "nowhere" : string.Join(", ", domains));
+        return (written, found, domains.Count == 0 ? "nowhere" : string.Join(", ", domains));
     }
 
     /// <summary>
@@ -89,14 +100,10 @@ public static class Icons
                     continue;
                 }
 
-                var path = Path.Combine(dir, safe + ".svg");
-                if (File.Exists(path) && File.ReadAllBytes(path).AsSpan().SequenceEqual(svg))
+                if (Disk.WriteBytes(Path.Combine(dir, safe + ".svg"), svg))
                 {
-                    continue;
+                    written++;
                 }
-
-                File.WriteAllBytes(path, svg);
-                written++;
             }
         }
         catch (Exception)

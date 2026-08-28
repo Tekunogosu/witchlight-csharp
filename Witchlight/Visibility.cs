@@ -84,10 +84,20 @@ public sealed class Visibility
     /// Choices about waypoints that no longer exist go first, so deleting a marker
     /// eventually takes its decision with it rather than leaving the store growing
     /// by one entry for every marker the server has ever had.
+    ///
+    /// Null is "the waypoints could not be read", which is emphatically not "there
+    /// are none": standing in an empty list for it would forget every decision on
+    /// the server the first time a save landed while the map layer was not up, and
+    /// every private marker would quietly become whatever the operator's default
+    /// says. Nothing is forgotten unless the live list is in hand.
     /// </summary>
-    public void Write(ICoreServerAPI api, IEnumerable<Waypoint> alive)
+    public void Write(ICoreServerAPI api, IEnumerable<Waypoint>? alive)
     {
-        Forget(alive);
+        if (alive is not null)
+        {
+            Forget(alive);
+        }
+
         if (!_unsaved)
         {
             return;

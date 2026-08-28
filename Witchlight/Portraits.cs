@@ -123,26 +123,14 @@ public static class Portraits
 
         try
         {
-            var into = DirectoryIn(exports);
-            Directory.CreateDirectory(into);
-            var path = Path.Combine(into, NameFor(uid) + ".png");
-
             // A character can be taken apart and put back exactly as it was, and
             // what comes back is the picture already on disk. The stored one is
             // then correct without being rewritten, which is the difference
             // between a drive that wears out and one that does not.
-            if (Same(path, png))
-            {
-                said = $"{png.Length} bytes, the same as the one stored";
-                return true;
-            }
-
-            // Beside itself and then into place, so a reader never sees half of it.
-            var temporary = path + ".part";
-            File.WriteAllBytes(temporary, png);
-            File.Move(temporary, path, overwrite: true);
-
-            said = $"{png.Length} bytes";
+            var path = Path.Combine(DirectoryIn(exports), NameFor(uid) + ".png");
+            said = Disk.WriteBytes(path, png)
+                ? $"{png.Length} bytes"
+                : $"{png.Length} bytes, the same as the one stored";
             return true;
         }
         catch (Exception error)
@@ -162,31 +150,6 @@ public static class Portraits
         catch (Exception)
         {
             return 0;
-        }
-    }
-
-    /// <summary>
-    /// Whether what is stored is already exactly this.
-    ///
-    /// The one place the question "does this need writing" is answered, so the
-    /// write sits behind it rather than behind a test repeated at each caller.
-    /// Length first: two pictures of the same seraph in different clothes almost
-    /// never weigh the same, so the read is usually skipped.
-    /// </summary>
-    private static bool Same(string path, byte[] png)
-    {
-        try
-        {
-            var stored = new FileInfo(path);
-            return stored.Exists
-                && stored.Length == png.Length
-                && File.ReadAllBytes(path).AsSpan().SequenceEqual(png);
-        }
-        catch (Exception)
-        {
-            // Unreadable is not the same as identical. Writing over it is the
-            // right answer to a file this cannot make sense of.
-            return false;
         }
     }
 
