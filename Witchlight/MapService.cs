@@ -72,6 +72,7 @@ public sealed class MapService : IDisposable
 
     private int _sendingPlayers;
     private int _sendingMarkers;
+    private int _collecting;
     private readonly TimeSpan _resendMarkers;
     private string _sentMarkers = "";
     private DateTime _markersSentAt = DateTime.MinValue;
@@ -191,6 +192,63 @@ public sealed class MapService : IDisposable
             _endpoint = null;
             _log.Warning("[witchlight] could not ask the map for a login link: {0}", error.Message);
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Takes the markers somebody asked for on the web, and leaves the service
+    /// holding none.
+    ///
+    /// The channel between the halves only runs one way — the mod posts, the
+    /// service answers — so a marker typed into the web form cannot be pushed at
+    /// the game and waits to be collected instead. Collecting empties the queue,
+    /// which means a reply that never reaches the caller loses what was in it;
+    /// that is the right trade for a marker, where asking again is one more form
+    /// and holding one twice is two markers on the map.
+    ///
+    /// Null where there is nothing to say, including where the service is not
+    /// answering. One request at a time: the tick that asks is faster than a round
+    /// trip on a busy server, and asking twice would collect the same queue twice.
+    /// </summary>
+    public async Task<string?> Pending()
+    {
+        if (Interlocked.CompareExchange(ref _collecting, 1, 0) != 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var endpoint = _endpoint ?? (_endpoint = Resolve());
+            if (endpoint is null)
+            {
+                return null;
+            }
+
+            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + "/markers/pending");
+            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
+
+            var reply = await _client.SendAsync(message).ConfigureAwait(false);
+            if (reply.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                _endpoint = null;
+            }
+            if (!reply.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return await reply.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            _endpoint = null;
+            _log.Debug("[witchlight] could not collect markers from the map: {0}", error.Message);
+            return null;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _collecting, 0);
         }
     }
 

@@ -190,6 +190,18 @@ public sealed class ServiceProcess : IDisposable
     public static bool MarkersPublic(string config) => On(config, "markers_public", byDefault: false);
 
     /// <summary>
+    /// Whether a marker anybody can see is a marker anybody can change.
+    ///
+    /// Off by default: being shown something is not being handed it. An operator
+    /// running a map the server keeps together — shared trader routes, a road
+    /// nobody owns — turns it on, and then a public marker is everyone's to
+    /// correct. A private marker is never anybody's but its owner's, whatever
+    /// this says.
+    /// </summary>
+    public static bool PublicMarkersEditable(string config) =>
+        On(config, "markers_public_editable", byDefault: false);
+
+    /// <summary>
     /// The address to give a player, or null when there is none to give.
     ///
     /// What an operator set, if they set anything. A server on the open internet

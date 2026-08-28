@@ -21,6 +21,12 @@ public class WitchlightSystem : ModSystem
 
     private ICoreServerAPI? _sapi;
 
+    /// <summary>
+    /// Who may see which marker. Read once the world is up, because it lives in
+    /// the savegame, and written back with it.
+    /// </summary>
+    private Visibility _visibility = Visibility.Empty;
+
     public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Server;
 
     public override void StartServerSide(ICoreServerAPI api)
@@ -41,7 +47,7 @@ public class WitchlightSystem : ModSystem
             .SetMessageHandler<PlayerPortrait>(OnPortraitFromClient);
         api.Event.PlayerNowPlaying += player => Safely("greeting a player", () =>
         {
-            SharedServer.SendTo(api, player);
+            SharedServer.SendTo(api, player, _visibility);
             AskForPalette(player);
             AskForIcons(player);
             AskForPortrait(player);
@@ -59,6 +65,7 @@ public class WitchlightSystem : ModSystem
         api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, () => Safely("starting up", () =>
         {
             KeepWorldFacts();
+            _visibility = Visibility.Read(api);
             StartService();
         }));
 
@@ -67,8 +74,8 @@ public class WitchlightSystem : ModSystem
         // dropped before it is sent anyway.
         api.Event.RegisterGameTickListener(_ => Safely("sharing markers", () =>
         {
-            SharedServer.SendToAll(api);
-            _service?.Markers(Live.WaypointsJson(api));
+            SharedServer.SendToAll(api, _visibility);
+            _service?.Markers(Live.WaypointsJson(api, _visibility));
         }), ShareIntervalMs);
 
         // A map this build cannot read is thrown away rather than upgraded: the
@@ -116,8 +123,16 @@ public class WitchlightSystem : ModSystem
         // nothing by the time a disk has finished with it.
         api.Event.RegisterGameTickListener(
             _ => Safely("posting players", PostPlayers), LiveIntervalMs);
+
+        // Markers asked for on the web ride the same tick. They are rare, the ask
+        // is a single request that usually comes back empty, and collecting them
+        // on the slow marker timer instead would mean watching a form for fifteen
+        // seconds to find out whether it worked.
+        api.Event.RegisterGameTickListener(
+            _ => Safely("collecting markers", CollectMarkers), LiveIntervalMs);
         api.Event.RegisterCallback(_ => Safely("seeding the map", () => Seed(SeedRadius)), SeedDelayMs);
         api.Event.GameWorldSave += () => Safely("exporting on save", () => Export("world save"));
+        api.Event.GameWorldSave += () => Safely("storing marker visibility", StoreVisibility);
         // Version first, and on every start: the quickest way to tell a deployed
         // mod from the one you meant to deploy. The map service prints its own for
         // the same reason, and the two must match on minor version.
@@ -617,7 +632,8 @@ public class WitchlightSystem : ModSystem
                 ? $"terrain: {regions.Count} regions, {stored / 1024} KiB, newest written {newest:HH:mm:ss}"
                 : "terrain: nothing exported yet",
             $"mapped: {_seasons.Count} chunks",
-            $"markers: {Live.Waypoints(_sapi).Count} saved on this server",
+            $"markers: {Live.Waypoints(_sapi, _visibility).Count} saved on this server"
+                + $", {_visibility.Decisions} with a chosen visibility",
             $"icons: {IconCount()} for drawing them",
             $"portraits: {Portraits.Count(ExportDir)} sent by players",
             $"players out: {_service?.PlayersHealth ?? "not started"}",
@@ -1129,6 +1145,69 @@ public class WitchlightSystem : ModSystem
         }
     }
 
+    /// <summary>
+    /// Collects the markers somebody asked for on the web and puts them on the
+    /// map.
+    ///
+    /// The asking is a round trip and the making touches the waypoint list, so the
+    /// two happen in different places: the request goes off the game thread, and
+    /// what comes back is applied on it. Markers go straight back out afterwards
+    /// rather than waiting for the slow timer, because the browser that asked is
+    /// watching for its own marker to appear and fifteen seconds of nothing reads
+    /// as a form that failed.
+    /// </summary>
+    private void CollectMarkers()
+    {
+        if (_sapi is null || _service is null)
+        {
+            return;
+        }
+
+        var api = _sapi;
+        var service = _service;
+        _ = Task.Run(async () =>
+        {
+            var held = await service.Pending().ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(held) || !held.Contains('{'))
+            {
+                return;
+            }
+
+            api.Event.EnqueueMainThreadTask(
+                () => Safely("making markers", () =>
+                {
+                    var (made, changed) = Pending.Apply(api, _visibility, held);
+                    if (made == 0 && changed == 0)
+                    {
+                        return;
+                    }
+
+                    api.Logger.Notification(
+                        "[witchlight] web map: {0} marker(s) made, {1} changed", made, changed);
+                    SharedServer.SendToAll(api, _visibility);
+                    service.Markers(Live.WaypointsJson(api, _visibility));
+                }),
+                "witchlight-markers");
+        });
+    }
+
+    /// <summary>
+    /// Stores who may see which marker, beside the waypoints themselves.
+    ///
+    /// Given the live list so that decisions about markers somebody has since
+    /// deleted go with them, and so the store cannot outlive what it describes.
+    /// </summary>
+    private void StoreVisibility()
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        var waypoints = Markers.Layer(_sapi)?.Waypoints;
+        _visibility.Write(_sapi, waypoints ?? new List<Vintagestory.GameContent.Waypoint>());
+    }
+
     /// <summary>Where live data goes, in place of a file rewritten every two seconds.</summary>
     private MapService? _service;
 
@@ -1254,6 +1333,20 @@ public class WitchlightSystem : ModSystem
 
         var (icons, from) = Icons.Export(api, ExportDir);
         api.Logger.Notification("[witchlight] marker icons: {0} written, from {1}", icons, from);
+
+        var (named, known, blocks, namesWritten) = BlockNames.Export(api, ExportDir, palette);
+        api.Logger.Notification(
+            "[witchlight] block names: {0} of {1} blocks named, {2} of them in the palette{3}",
+            named,
+            blocks,
+            known,
+            namesWritten ? "" : " — unchanged, not rewritten");
+        if (named > 0 && known == 0)
+        {
+            api.Logger.Warning(
+                "[witchlight] no named block is in the palette, so the map will show codes "
+                + "rather than names. The two are keyed differently, which is a bug in this mod.");
+        }
 
         api.Logger.Notification(
             written

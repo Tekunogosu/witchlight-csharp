@@ -1,13 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
 using SkiaSharp;
+using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
-using System.Linq;
-using Vintagestory.API.Client;
 
 namespace Witchlight;
 
@@ -590,26 +589,6 @@ public static class PaletteBuilder
     /// </summary>
     public static bool Write(Palette palette, string path)
     {
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var body = JsonConvert.SerializeObject(palette, Formatting.Indented);
-        try
-        {
-            if (File.Exists(path) && File.ReadAllText(path) == body)
-            {
-                return false;
-            }
-        }
-        catch (Exception)
-        {
-            // Unreadable is not the same as identical, so it is written.
-        }
-
-        File.WriteAllText(path, body);
-        return true;
+        return Disk.Write(path, JsonConvert.SerializeObject(palette, Formatting.Indented));
     }
 }

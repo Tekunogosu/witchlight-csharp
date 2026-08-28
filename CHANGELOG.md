@@ -8,6 +8,108 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.20.2
+
+Viewer tweaks; the mod is unchanged and the version moves only to keep the halves
+reporting the same number.
+
+## 0.20.1
+
+A viewer tweak; the mod is unchanged and the version moves only to keep the
+halves reporting the same number.
+
+## 0.20.0
+
+Viewer only: settings that persist, a grey measured palette, and a clearer marker
+box. The mod is unchanged and the version moves only to keep the halves reporting
+the same number.
+
+## 0.19.3
+
+Viewer fixes and preset creation; the mod is unchanged and the version moves only
+to keep the halves reporting the same number.
+
+## 0.19.2
+
+Window fixes in the viewer; the mod is unchanged and the version moves only to
+keep the halves reporting the same number.
+
+## 0.19.1
+
+**Shared markers stay on the in-game map, and edits reach it.** They were added
+once each and never touched again, which was wrong twice: a marker somebody edited
+kept whatever it said when it first arrived, and the whole set vanished the first
+time anybody closed their world map — the game drops every temporary waypoint on
+close, and nothing put them back. The client now holds what the server sent and
+lays the set down again when it changes or when the map has been emptied under it.
+No reconnect, and nothing to do by hand.
+
+## 0.19.0
+
+**Deploy both halves together.** The mod collects markers in a new shape — makes
+and changes rather than makes alone — and posts a block name table the service
+serves from.
+
+**Markers can be edited.** Right click one on the web map to open it in the form.
+Its owner always may; `markers_public_editable`, new and off, lets anybody correct
+a marker anybody can see. Whoever asks, the mod decides again against the waypoint
+itself before anything moves.
+
+**Marker presets.** Right click a block and the form starts as that block: named
+what the game calls it, and — once you have saved a preset for it — coloured,
+pictured and shared the way you last chose. "Set as preset" on the form keeps one;
+the presets window edits and deletes them. A pattern may use `*`, so one preset
+saved on basalt copper ore can be widened to `game:ore-*-nativecopper-*` and
+cover every rock it appears in.
+
+**A settings window of your own**, behind your name in the corner. It holds
+whether new markers become presets, whether they are private — over the server
+default, either way — and three size sliders for the player list, the windows and
+the map buttons. What is about you follows your account to any browser; what is
+about the screen stays in it.
+
+**The map pans past what has been drawn**, by a world's width on every side,
+rather than pinning the edge of the export to the edge of the screen.
+
+**The settings button has moved to the top left**, beside your name.
+
+## 0.18.1
+
+The marker form is a movable window now; the mod is unchanged and the version
+moves only to keep the halves reporting the same number.
+
+## 0.18.0
+
+**Deploy both halves together.** The mod posts markers in a new shape — sorted by
+who may see them — and the service does not read the old one. A service on 0.17
+paired with a mod on 0.18 shows an empty map, and the reverse shows one that never
+updates.
+
+**Markers can be made from the web map.** Right click the map for a form on the
+left, or press the flag in the corner and type the coordinates — or press ⌖ and
+click the spot. The form offers the same colours and the same pictures the game's
+own waypoint dialog does, read off the game rather than written down, so a mod
+that adds either adds it here. Making one needs a login link; the flag appears
+once you have followed one.
+
+**A marker can be kept to its owner.** The box beside Save decides, and it starts
+where `markers_public` puts it. That setting now means what it always said it
+meant — the default for a marker nobody has decided about — and a choice made on
+the form overrides it both ways, on the web map and on other players' in-game maps
+alike.
+
+**Markers a viewer may not see no longer reach their browser.** The web map used
+to send every marker to everybody regardless of the setting. With `markers_public`
+off, which is the default, markers made in game are now their owner's alone there
+too, and a map that showed everything will show less until their owners share them.
+
+## 0.17.1
+
+**Marker colours match the game again.** A marker read the game's packed colour
+back with red and blue exchanged, so a red marker reached the browser blue and a
+blue one red. Grey and green were unaffected, which is why the map looked right
+until it did not.
+
 ## 0.17.0
 
 **Deploy both halves together.** The mod and the service no longer speak the

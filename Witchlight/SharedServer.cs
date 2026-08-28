@@ -13,37 +13,29 @@ namespace Witchlight;
 /// A player's own markers are left out: they already have those, and sending them
 /// back would put a second copy on their map.
 ///
-/// **Whose markers travel is an operator's decision.** A marker a player drops is
-/// theirs; `markers_public` in the map's settings is what makes one everybody's.
-/// Until a player can mark a single waypoint as shared, that setting is the whole
-/// of the answer: off shares nothing, on shares everything, and there is no third
-/// state yet for the per-marker choice to live in.
+/// **Whose markers travel is their owner's decision, and the operator sets the
+/// default.** A marker a player drops is theirs; `markers_public` in the map's
+/// settings decides only the ones nobody has chosen for. A choice made on the web
+/// form overrides it in both directions, which is why the question is asked of
+/// <see cref="Visibility"/> rather than of the setting.
 /// </summary>
 public static class SharedServer
 {
     public const string Channel = "witchlight";
 
-    public static SharedMarkers For(ICoreServerAPI api, IServerPlayer player)
+    public static SharedMarkers For(ICoreServerAPI api, IServerPlayer player, Visibility visibility)
     {
-        // Read each time rather than held, so an operator changing their mind
-        // takes effect on the next send instead of the next restart — the same
-        // rule the announcement follows.
-        if (!ServiceProcess.MarkersPublic(ServiceProcess.ConfigPath))
-        {
-            return new SharedMarkers();
-        }
-
-        var layer = api.ModLoader
-            .GetModSystem<WorldMapManager>()?
-            .MapLayers?
-            .OfType<WaypointMapLayer>()
-            .FirstOrDefault();
-
         var shared = new SharedMarkers();
+        var layer = Markers.Layer(api);
         if (layer?.Waypoints is null)
         {
             return shared;
         }
+
+        // Read each time rather than held, so an operator changing their mind
+        // takes effect on the next send instead of the next restart — the same
+        // rule the announcement follows.
+        var byDefault = !ServiceProcess.MarkersPublic(ServiceProcess.ConfigPath);
 
         foreach (var waypoint in layer.Waypoints.ToList())
         {
@@ -52,9 +44,14 @@ public static class SharedServer
                 continue;
             }
 
+            if (visibility.IsPrivate(waypoint, byDefault))
+            {
+                continue;
+            }
+
             shared.Markers.Add(new SharedMarker
             {
-                Key = Key(waypoint),
+                Key = Markers.Key(waypoint),
                 X = waypoint.Position.X,
                 Y = waypoint.Position.Y,
                 Z = waypoint.Position.Z,
@@ -68,21 +65,6 @@ public static class SharedServer
         return shared;
     }
 
-    /// <summary>
-    /// Identity for a marker as the clients see it. The waypoint's own guid is
-    /// used where there is one; position and title stand in where there is not,
-    /// which is enough to keep a marker from being added twice.
-    /// </summary>
-    private static string Key(Waypoint waypoint)
-    {
-        if (!string.IsNullOrEmpty(waypoint.Guid))
-        {
-            return waypoint.Guid;
-        }
-
-        return $"{(int)waypoint.Position.X}:{(int)waypoint.Position.Y}:{(int)waypoint.Position.Z}:{waypoint.Title}";
-    }
-
     private static string OwnerName(ICoreServerAPI api, string? uid)
     {
         if (string.IsNullOrEmpty(uid))
@@ -94,16 +76,16 @@ public static class SharedServer
         return online?.PlayerName ?? api.PlayerData.GetPlayerDataByUid(uid)?.LastKnownPlayername ?? "";
     }
 
-    public static void SendTo(ICoreServerAPI api, IServerPlayer player)
+    public static void SendTo(ICoreServerAPI api, IServerPlayer player, Visibility visibility)
     {
-        api.Network.GetChannel(Channel)?.SendPacket(For(api, player), player);
+        api.Network.GetChannel(Channel)?.SendPacket(For(api, player, visibility), player);
     }
 
-    public static void SendToAll(ICoreServerAPI api)
+    public static void SendToAll(ICoreServerAPI api, Visibility visibility)
     {
         foreach (var player in api.World.AllOnlinePlayers.OfType<IServerPlayer>())
         {
-            SendTo(api, player);
+            SendTo(api, player, visibility);
         }
     }
 }

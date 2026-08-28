@@ -73,6 +73,41 @@ public class LiveWaypoint
     public string OwnerUid { get; set; } = "";
 
     public bool Pinned { get; set; }
+
+    /// <summary>
+    /// What names this marker wherever it goes. A browser that asked for one
+    /// watches for this to appear, and it is the waypoint's own guid, so the
+    /// marker it gets back is the marker it asked for and not one that merely
+    /// looks like it.
+    /// </summary>
+    public string Key { get; set; } = "";
+
+    /// <summary>
+    /// Whether this marker is its owner's alone. The service uses it to decide
+    /// who is sent it; the page uses it to say so on the marker itself, because a
+    /// person who marked something private should be able to see that it took.
+    /// </summary>
+    public bool Private { get; set; }
+}
+
+/// <summary>
+/// Every marker, arranged by who may see it.
+///
+/// The service does not read a waypoint and must not have to. Deciding who sees
+/// what needs the owner and the choice, and the half that knows both is this one,
+/// so the sorting happens here and the service is left holding two lists it only
+/// has to hand out: everybody's, and each person's own.
+/// </summary>
+public class LiveMarkers
+{
+    /// <summary>The colours the game offers, so the web form can offer the same.</summary>
+    public List<string> Colors { get; set; } = new();
+
+    /// <summary>Markers anyone may see.</summary>
+    public List<LiveWaypoint> Public { get; set; } = new();
+
+    /// <summary>Markers only their owner may see, by the uid of that owner.</summary>
+    public Dictionary<string, List<LiveWaypoint>> Private { get; set; } = new();
 }
 
 /// <summary>
@@ -80,9 +115,8 @@ public class LiveWaypoint
 /// players have saved.
 ///
 /// Waypoints live server-side in the world map manager, so every marker on the
-/// server is readable from here — which also means every marker ends up on the
-/// map. That is the intent for now; scoping them to groups is a later decision,
-/// and the export is the place it will be made.
+/// server is readable from here. Which of them reach whom is decided here too:
+/// see <see cref="LiveMarkers"/>.
 /// </summary>
 public static class Live
 {
@@ -92,10 +126,49 @@ public static class Live
         return JsonConvert.SerializeObject(Players(api, exports));
     }
 
-    /// <summary>Every marker, as the map service wants it.</summary>
-    public static string WaypointsJson(ICoreServerAPI api)
+    /// <summary>Every marker, sorted by who may see it, as the service wants it.</summary>
+    public static string WaypointsJson(ICoreServerAPI api, Visibility visibility)
     {
-        return JsonConvert.SerializeObject(Waypoints(api));
+        return JsonConvert.SerializeObject(Markers(api, visibility));
+    }
+
+    /// <summary>
+    /// Every marker, arranged into what anyone may see and what only its owner may.
+    ///
+    /// The colour list rides along rather than going on a channel of its own. It
+    /// is a few hundred bytes against a payload of tens of kilobytes, it changes
+    /// only when the mod set does, and sending it with the markers means a service
+    /// that restarted has the palette back on the next post instead of needing to
+    /// be told separately that it lost it.
+    /// </summary>
+    public static LiveMarkers Markers(ICoreServerAPI api, Visibility visibility)
+    {
+        var sorted = new LiveMarkers { Colors = Witchlight.Markers.Palette(api) };
+        foreach (var marker in Waypoints(api, visibility))
+        {
+            if (!marker.Private)
+            {
+                sorted.Public.Add(marker);
+                continue;
+            }
+
+            // A private marker whose owner is nobody can be shown to nobody. It
+            // should not exist; dropping it is the only honest thing to do with
+            // one that does.
+            if (marker.OwnerUid.Length == 0)
+            {
+                continue;
+            }
+
+            if (!sorted.Private.TryGetValue(marker.OwnerUid, out var theirs))
+            {
+                theirs = new List<LiveWaypoint>();
+                sorted.Private[marker.OwnerUid] = theirs;
+            }
+            theirs.Add(marker);
+        }
+
+        return sorted;
     }
 
     public static List<LivePlayer> Players(ICoreServerAPI api, string exports)
@@ -118,9 +191,9 @@ public static class Live
             {
                 Name = player.PlayerName ?? "",
                 Uid = player.PlayerUID ?? "",
-                X = (int)position.X,
-                Y = (int)position.Y,
-                Z = (int)position.Z,
+                X = Block(position.X),
+                Y = Block(position.Y),
+                Z = Block(position.Z),
                 Health = health?.GetFloat("currenthealth") ?? 0f,
                 MaxHealth = health?.GetFloat("maxhealth") ?? 0f,
                 Saturation = hunger?.GetFloat("currentsaturation") ?? 0f,
@@ -137,18 +210,18 @@ public static class Live
     /// reports how many there are: an empty map with a working service is either
     /// no markers or no post, and those need telling apart.
     /// </summary>
-    public static List<LiveWaypoint> Waypoints(ICoreServerAPI api)
+    public static List<LiveWaypoint> Waypoints(ICoreServerAPI api, Visibility visibility)
     {
-        var layer = api.ModLoader
-            .GetModSystem<WorldMapManager>()?
-            .MapLayers?
-            .OfType<WaypointMapLayer>()
-            .FirstOrDefault();
-
+        var layer = Witchlight.Markers.Layer(api);
         if (layer?.Waypoints is null)
         {
             return new List<LiveWaypoint>();
         }
+
+        // Read each time rather than held, so an operator changing their mind
+        // takes effect on the next post instead of the next restart — the same
+        // rule the announcement and the in-game share both follow.
+        var byDefault = !ServiceProcess.MarkersPublic(ServiceProcess.ConfigPath);
 
         var waypoints = new List<LiveWaypoint>();
         foreach (var waypoint in layer.Waypoints.ToList())
@@ -162,25 +235,30 @@ public static class Live
             {
                 Title = waypoint.Title ?? "",
                 Icon = string.IsNullOrEmpty(waypoint.Icon) ? "circle" : waypoint.Icon,
-                Color = Hex(waypoint.Color),
-                X = (int)waypoint.Position.X,
-                Y = (int)waypoint.Position.Y,
-                Z = (int)waypoint.Position.Z,
+                Color = Witchlight.Markers.Hex(waypoint.Color),
+                X = Block(waypoint.Position.X),
+                Y = Block(waypoint.Position.Y),
+                Z = Block(waypoint.Position.Z),
                 Owner = NameOf(api, waypoint.OwningPlayerUid),
                 OwnerUid = waypoint.OwningPlayerUid ?? "",
                 Pinned = waypoint.Pinned,
+                Key = Witchlight.Markers.Key(waypoint),
+                Private = visibility.IsPrivate(waypoint, byDefault),
             });
         }
         return waypoints;
     }
 
     /// <summary>
-    /// The colours a player chose for themselves.
+    /// Which block a position is in.
     ///
-    /// Read from the applied skin parts, which are watched attributes and so are
-    /// known here without asking anyone. A part the game does not ship, or a mod
-    /// that renames one, simply yields nothing and the face is drawn without it.
+    /// Floor rather than a cast, which rounds toward zero and so names the block
+    /// one to the east and south of the one a negative coordinate is actually in.
+    /// A Vintage Story world runs from zero, so nothing on a real map reaches
+    /// that; it is one operation with one right answer, and both the players and
+    /// the markers ask it here rather than each spelling it out.
     /// </summary>
+    private static int Block(double at) => (int)Math.Floor(at);
 
     /// <summary>
     /// Who owns a marker. Offline owners are looked up in the player data, so a
@@ -202,9 +280,4 @@ public static class Live
         return api.PlayerData.GetPlayerDataByUid(uid)?.LastKnownPlayername ?? "";
     }
 
-    /// <summary>Waypoint colours are packed ints; the map wants CSS.</summary>
-    private static string Hex(int color)
-    {
-        return $"#{color & 0xff:x2}{(color >> 8) & 0xff:x2}{(color >> 16) & 0xff:x2}";
-    }
 }

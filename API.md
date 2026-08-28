@@ -43,6 +43,8 @@ proxy in front of it before exposing it to the internet.
 | `GET /tiles/{x}/{z}.png` | one tile, 256 blocks square at one pixel per block | PNG |
 | `GET /live.json` | who is online and every marker | see below |
 | `GET /icons.json` | the marker pictures that exist | JSON array of names |
+| `GET /colors.json` | the colours the game offers for a marker | JSON array of `#rrggbb` |
+| `POST /markers` | asks the game to make a marker | `202` and the name it will have |
 | `GET /icons/{name}.svg` | one marker picture | SVG |
 | `GET /portraits/{name}.png` | a picture a player's client drew of their seraph | PNG |
 | `GET /login?t={word}` | spends a login link and seats the browser | `303` to `/`, with a cookie |
@@ -88,8 +90,20 @@ the west and the one to the north. Those neighbours are in the list already.
               "Portrait":"6164...","PortraitAt":1756315231}],
  "Waypoints":[{"Title":"Forge","Icon":"circle","Color":"#00ff00",
                "X":511810,"Y":110,"Z":511810,"Owner":"ada",
-               "OwnerUid":"...","Pinned":false}]}
+               "OwnerUid":"...","Pinned":false,
+               "Key":"9e5738f0-…","Private":false}]}
 ```
+
+**Which markers are in it depends on who is asking.** Everyone is sent the ones
+their owners share; a browser carrying a session is also sent that player's own.
+A private marker never leaves the service for anybody else's browser, because a
+page cannot be asked to hide what it has already been handed. The service still
+does not read a waypoint to decide this — the mod posts two lists and this hands
+back the ones that apply.
+
+`Key` is the waypoint's guid, and is how a page that asked for a marker
+recognises it arriving. `Private` says the marker is its owner's alone, so a page
+can show that a choice took.
 
 Served from memory, out of whatever the mod last posted. **Players expire after
 30 seconds** — a game server that stops leaves no dots behind, because a dot
@@ -115,19 +129,43 @@ when it routes and serves the file either way; the query exists so that the addr
 changes when the picture does. It moves only when bytes were actually written, so a
 player who takes a hat off and puts it back gets the same address again.
 
+### `POST /markers`
+
+```json
+→ {"Title":"Forge","Icon":"anvil","Color":"#c8772e","X":511810,"Y":110,"Z":511810,
+   "Private":false}
+← 202 {"Key":"9e5738f0-303a-673d-a328-f19e0d08e7d1"}
+```
+
+The one thing the public port accepts rather than serves. Needs a session: the
+owner is taken from it and never from the body, because a page that could say
+whose marker it is making could make one for anybody.
+
+**Nothing has been made when this answers.** The service cannot reach a game
+server — the channel between the halves runs one way — so the marker waits here
+until the mod collects it, which it does every two seconds. `Key` is the guid the
+waypoint will be made under; the page watches `/live.json` for it to appear, which
+is the only honest confirmation there is.
+
+`400` names the field that was wrong, in words meant to be read out. `401` means
+no session. `503` means the queue is full, which is a game server that has stopped
+collecting.
+
 ### `GET /me.json`
 
 ```json
-{"Name":"ada","Uid":"…","MarkersPublic":false}
-{"Name":null,"Uid":null,"MarkersPublic":false}
+{"Name":"ada","Uid":"…","MarkersPublic":false,"Waiting":0}
+{"Name":null,"Uid":null,"MarkersPublic":false,"Waiting":0}
 ```
 
 The same shape logged in or not, so a page never has to tell an error from a
-stranger. `MarkersPublic` is the operator's setting, here because it decides what
-the page may offer somebody who has not logged in.
+stranger. `MarkersPublic` is the operator's setting, here because it is where the
+marker form's private box starts. `Waiting` is how many markers the game server
+has not collected, which is how a form whose marker has not appeared tells a game
+server that has stopped from one that is merely slow.
 
-**The map itself stays public and unauthenticated.** A session decides only whose
-settings and whose markers a page may act on. Nothing here gates what can be seen.
+**The map itself stays public and unauthenticated**, and a session decides whose
+markers a page is sent and what it may act on.
 
 ### Logging in
 
@@ -193,18 +231,35 @@ in the service's config file (`-a` for the address), and `WITCHLIGHT_API_BIND` a
 | | | |
 |---|---|---|
 | `POST /live/players` | who is online, a JSON array | every 2s |
-| `POST /live/markers` | every marker, a JSON array | only when they differ from the last post |
+| `POST /live/markers` | every marker, sorted by who may see it | only when they differ from the last post |
+| `POST /markers/pending` | → the markers asked for on the web | every 2s |
 | `POST /auth/mint` | `{"Uid":…,"Name":…}` → `{"Token":…}` | when a player asks for a link |
 
-`/auth/mint` is the one thing here that answers rather than merely accepting. It
-lives on this channel because only the mod can reach it and only the mod knows
-which uid belongs to which player — the trust it needs is the trust already here.
+Markers are posted sorted, because deciding who may see one needs to know what a
+waypoint is and the service does not:
 
-Both answer `204` on success, `400` for a body that is not a JSON array, `401`
-without the token, `404` for another path, and `405` for anything but a POST. A post may carry 8 MB at
-most. The service does not parse either payload — the mod knows what a waypoint
-is, and the service knows it is a JSON array to hand to a browser, which is the
-whole of the contract.
+```json
+{"Colors":["#f9d0dc","…"],
+ "Public":[{…}],
+ "Private":{"<owner uid>":[{…}]}}
+```
+
+`Colors` are the colours the game's own waypoint dialog offers, read off the map
+layer so a mod that adds one adds it to the web form too. They ride with the
+markers rather than going on a channel of their own: a few hundred bytes against
+tens of kilobytes, and a service that restarted has them back on the next post
+instead of having to be told separately that it lost them.
+
+`/markers/pending` and `/auth/mint` are the two things here that answer rather
+than merely accepting. Both live on this channel because only the mod can reach
+it. `/markers/pending` **empties the queue** — a reply lost on the way back costs
+one form, where holding each marker until the mod confirmed would put the same one
+on the map twice every time an answer went missing.
+
+Posts answer `204` on success, `400` for a body this build does not post, `401`
+without the token, `404` for another path, and `405` for anything but a POST. A
+post may carry 8 MB at most. The service does not read a waypoint — the mod knows
+what one is, and the service knows it is holding arrays to hand to a browser.
 
 Markers are written to `markers.json` when they arrive and differ; players never
 touch the disk. Posts are dropped rather than queued if the previous one has not
@@ -233,7 +288,7 @@ the file — the format has one owner and it is the service.
 | `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s | the surface of every chunk exported so far |
 | `icons/{name}.svg` | at asset load, or when a client sends them | the picture each marker is drawn with |
 | `world.json` | once the world is ready, and on any export until it can be | where the world counts from, so coordinates match what a player reads in game |
-| `markers.json` | **by the service**, when markers arrive and differ | the last markers posted |
+| `markers.json` | **by the service**, when markers arrive and differ | the last markers posted, sorted by who may see them |
 | `portraits/{uid in hex}.png` | on that player's every join, and 30s after their character last changed | a picture of that player's seraph, drawn on their own machine |
 | `service.json` | **by the service**, as it binds | the addresses the map answers on, the one worth giving somebody else first. Removed when the mod stops the service, so nothing hands a player the address of a map that is gone |
 | `api.json` | **by the service**, as it binds | the port and token of the API channel, mode `0600`. Removed when the mod stops the service — a port that has been taken over by something else answers, and there is no telling what |
@@ -270,7 +325,7 @@ Registered on both sides. All three messages are protobuf.
 
 | | | |
 |---|---|---|
-| `SharedMarkers` | server → client, every 15s | every marker not belonging to the recipient, added to their in-game map as temporary waypoints |
+| `SharedMarkers` | server → client, every 15s | every shared marker not belonging to the recipient, added to their in-game map as temporary waypoints |
 | `IconRequest` | server → one admin's client | asks for marker pictures, carrying the names it already has |
 | `IconTable` | client → server, sliced by size | the SVGs that client's assets can supply |
 | `PortraitRequest` | server → one client, 8s after their join | asks that player to draw themselves |
@@ -281,6 +336,23 @@ Registered on both sides. All three messages are protobuf.
 A `SharedMarker` carries a stable `Key` so a client can tell a new marker from
 one it already holds, and an `Owner` name but no uid: clients need to know whose
 a marker is, and identity is the server's business.
+
+### Who may see a marker
+
+One rule, asked in one place, and both maps obey it. A marker its owner chose for
+goes where they chose; a marker nobody has chosen for follows `markers_public` in
+the service's settings, which is what that setting has always meant. Off — the
+default — keeps it to its owner; on shares it with everybody.
+
+The choice is kept in the savegame under `witchlight:markervisibility`, beside the
+waypoints themselves rather than in a file of its own: it is a property of a
+waypoint, and two stores that can be lost separately are two stores that can
+disagree about who may see what. Only an actual decision is stored, so the map
+holds one entry per decision rather than one per marker, and decisions about
+markers that have since been deleted are dropped on the next world save.
+
+A waypoint has no field for any of this, and will not: in the game a waypoint is
+only ever its owner's, so sharing is entirely this mod's idea.
 
 **Coordinates.** Vintage Story shows every coordinate a player sees relative to
 world spawn, while the world is a million blocks across with spawn near the
