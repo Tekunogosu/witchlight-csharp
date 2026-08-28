@@ -1,0 +1,13 @@
+{
+  "type": "code",
+  "modid": "witchlight",
+  "name": "Witchlight",
+  "authors": [
+    "theysa"
+  ],
+  "description": "Exports map data for the Witchlight map server, and shares every player's map markers with everyone on the server.",
+  "version": "0.16.1",
+  "side": "universal",
+  "requiredOnClient": false,
+  "dependencies": {}
+}

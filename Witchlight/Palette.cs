@@ -9,7 +9,7 @@ using Vintagestory.API.Config;
 using System.Linq;
 using Vintagestory.API.Client;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// One block's map appearance: the colour its top face averages to, and the

@@ -3,7 +3,7 @@ using SkiaSharp;
 using Vintagestory.API.Client;
 using Vintagestory.API.MathTools;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// Draws the player, as the game draws them, into a picture.
@@ -92,7 +92,7 @@ public sealed class PortraitCapture : IRenderer
     public PortraitCapture(ICoreClientAPI capi)
     {
         _capi = capi;
-        capi.Event.RegisterRenderer(this, EnumRenderStage.Ortho, "mapstique-portrait");
+        capi.Event.RegisterRenderer(this, EnumRenderStage.Ortho, "witchlight-portrait");
     }
 
     public double RenderOrder => 1.01;
@@ -327,7 +327,7 @@ public sealed class PortraitCapture : IRenderer
         return against.Count == 0 ? "" : $", CUT OFF at the {string.Join(" and ", against)}";
     }
 
-    private static FramebufferAttrs Attributes() => new("mapstique-portrait", Canvas, Canvas)
+    private static FramebufferAttrs Attributes() => new("witchlight-portrait", Canvas, Canvas)
     {
         Attachments = new[]
         {

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using ProtoBuf;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>Sent to one admin when the server has no marker pictures of its own.</summary>
 [ProtoContract]

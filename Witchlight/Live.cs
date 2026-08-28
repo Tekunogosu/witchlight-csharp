@@ -7,7 +7,7 @@ using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>Where a player is, right now.</summary>
 public class LivePlayer
@@ -23,6 +23,17 @@ public class LivePlayer
     /// cannot, so the one place that files these decides what they are called.
     /// </summary>
     public string? Portrait { get; set; }
+
+    /// <summary>
+    /// When that picture was drawn, in seconds, or zero where there is none.
+    ///
+    /// The name alone is the same before and after a player is redrawn, so nothing
+    /// downstream could tell that anything had happened: the map went on showing
+    /// the picture it already had until somebody reloaded the page. This is the
+    /// part that changes, and it travels beside the name rather than inside it
+    /// because what is stored really is one file under one name.
+    /// </summary>
+    public long PortraitAt { get; set; }
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
@@ -101,6 +112,7 @@ public static class Live
             var watched = player.Entity.WatchedAttributes;
             var health = watched?.GetTreeAttribute("health");
             var hunger = watched?.GetTreeAttribute("hunger");
+            var stored = Portraits.StoredFor(exports, player.PlayerUID ?? "");
 
             players.Add(new LivePlayer
             {
@@ -113,14 +125,15 @@ public static class Live
                 MaxHealth = health?.GetFloat("maxhealth") ?? 0f,
                 Saturation = hunger?.GetFloat("currentsaturation") ?? 0f,
                 MaxSaturation = hunger?.GetFloat("maxsaturation") ?? 0f,
-                Portrait = Portraits.StoredNameFor(exports, player.PlayerUID ?? ""),
+                Portrait = stored?.Name,
+                PortraitAt = stored?.At ?? 0,
             });
         }
         return players;
     }
 
     /// <summary>
-    /// Every marker saved on the server. Public because `/mapstique status`
+    /// Every marker saved on the server. Public because `/witchlight status`
     /// reports how many there are: an empty map with a working service is either
     /// no markers or no post, and those need telling apart.
     /// </summary>

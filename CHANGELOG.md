@@ -1,12 +1,116 @@
-# Mapstique (server mod)
+# Witchlight (server mod)
 
 The version tracks the [map service](../rust/mapstique), and the two **must match
 on minor version** — they share a file format and a socket protocol, and neither
 reads what the other half of a different minor wrote.
 
-While Mapstique is alpha, a format change **clears the map** on start rather than
+While Witchlight is alpha, a format change **clears the map** on start rather than
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
+
+## Unreleased
+
+### A new portrait shows without a reload
+
+A player who sends a new picture keeps the name they had — it is derived from who
+they are, not from what the picture holds — so nothing downstream could tell that
+anything had happened. The card compared one name against the same name, decided
+nothing had changed, and left the picture alone; the browser, handed an address it
+had seen before, was entitled to do the same. The map went on showing the old face
+until somebody reloaded the page.
+
+A live player now carries `PortraitAt`, the time the stored file was written, read
+in the same look that decides whether there is a picture at all. The map asks for
+`/portraits/{name}.png?v={PortraitAt}`, so a redrawn player changes the address
+rather than only the file behind it.
+
+The time moves only when bytes were actually written, so a character taken apart
+and put back the same way costs no refetch.
+
+### The project is called Witchlight
+
+Every mapstique in the mod and the map service is now witchlight — the namespace,
+the assembly, the mod id, the network channel, the log prefix, the commands, and
+the names things are called on disk. Nothing about how either half works changed,
+which is why the version did not move.
+
+What is on disk moved with it: the export folder beside the save is `witchlight`,
+the settings are `ModConfig/witchlight.conf`, the service logs to
+`Logs/witchlight-service.log`, the socket is `/tmp/witchlight-*.sock` and the
+variable that moves it is `WITCHLIGHT_API_SOCKET`. **The map rebuilds**, since none
+of the old files are read under their old names, and the old `mapstique` folder,
+config and `mapstique.zip` want removing by hand — the mod id changed, so the game
+sees two different mods and will load both.
+
+The region format is untouched. `MSQR` and `.msqr` never carried the old name and
+changing them would be a format change rather than a rename, which is the one thing
+this was not.
+
+### /wl
+
+The command tree answers to `wl` as well as `witchlight`, on both sides. Claimed
+only where nothing already answers to it: the game's `WithAlias` writes into the
+command table without looking first, so taking two letters another mod holds would
+break that mod silently and leave nothing anywhere saying where its command went.
+Where the short name is taken the long one is registered alone and the log says so,
+which costs nothing — every piece of documentation gives the long name.
+
+## 0.16.1
+
+### Everyone is drawn, and drawn again when they change
+
+Every player is asked for a picture when they join, rather than only an admin
+typing a command. A portrait decides what one card looks like and that card is the
+sender's own, so there is nothing in it to be trusted with — the rule that guards
+the palette and the marker pictures was guarding the wrong thing here. Asked on
+every join and not once ever: a seraph that changed while its player was away is a
+picture that is now wrong, and only the machine that can see it knows.
+
+A client also watches its own character and sends a new picture **thirty seconds
+after it last changed**. A change is not a signal to send — it is a signal to
+start waiting again — so somebody trying on six hats sends one picture rather than
+six, and a whole afternoon at the dressing table costs one. What counts as a change
+is the character inventory, which is every piece of clothing and armour worn, and
+the skin configuration. Neither the hotbar nor the backpack: a portrait is cut to
+the head and shoulders and what is carried never appears in it.
+
+The ask waits eight seconds after a join. A client at the moment the server calls
+it playing is still finding its feet, and a seraph that is not loaded yet renders
+as a picture of nothing which the client then reports it could not draw.
+
+Nothing unprompted reaches a player's screen any more. A portrait that could not be
+drawn is said in chat only to somebody who asked for one, and to the log otherwise.
+
+`.witchlight portrait` is now **once every five minutes**, and refused before
+anything is drawn rather than after. Nothing about the map being current rests on
+anybody typing it — the ask on join and the wait after a change cover that between
+them — so the command is for wanting a picture sooner than that, and wanting one
+twice over is wanting it once. The five minutes are counted from a picture that
+actually went, so an attempt that drew nothing may be made again straight away.
+
+### Fewer writes, and a floor under them
+
+A picture identical to the one already stored is not written again. A character can
+be taken apart and put back exactly as it was, and what comes back is the file that
+is already there.
+
+A picture a client sends **unasked** is taken no closer together than twenty-five
+seconds. Opening a write to every client rather than to a handful of admins is what
+makes that worth saying out loud: how large a portrait may be was already answered
+where it is filed, and how often one may arrive is now answered beside it.
+
+The floor is derived from the quiet period rather than picked next to it — the
+fastest an honest client sends on its own is one settle, so anything at or above
+that would start refusing honest pictures. Both numbers live in `Portraits` for
+that reason: they are a pair, and a pair kept in two files drifts apart the first
+time either is tuned.
+
+**What the server asked for is never counted against the floor.** The server knows
+how often it asks, one ask buys one picture, and nothing but an ask can put a name
+in that table. Without this a player who joined and then typed the command a second
+later would watch their own screen say the picture was sent while it went into a
+log line instead — the join ask and the command are both legitimate, and they can
+land as close together as a person can type.
 
 ## 0.16.0
 
@@ -179,13 +283,13 @@ reads as a unit being silly rather than as a render that failed.
 
 ### Fixed
 
-`/mapstique portrait` did not exist. The command was registered on the client, and
+`/witchlight portrait` did not exist. The command was registered on the client, and
 the game gives client commands a dot rather than a slash — so the one that was
-added answered to `.mapstique portrait`, while `/mapstique portrait` went to the
+added answered to `.witchlight portrait`, while `/witchlight portrait` went to the
 server, which had no such subcommand.
 
 The server has one now, shaped like every other thing it asks a client for: it
-sends a request, the client draws, and the picture comes back. `.mapstique
+sends a request, the client draws, and the picture comes back. `.witchlight
 portrait` still sends one unprompted.
 
 The same split has always applied to `palette`, `icons` and `colors`, and was
@@ -224,9 +328,9 @@ Nothing this mod does is worth a server.
 
 ### A player can send the map a picture of themselves
 
-`/mapstique portrait [player]` asks a player's client to draw them. It renders the
+`/witchlight portrait [player]` asks a player's client to draw them. It renders the
 seraph the way the character screen does — into a buffer of its own rather than
-onto the screen — and sends the result to the server as a PNG. `.mapstique
+onto the screen — and sends the result to the server as a PNG. `.witchlight
 portrait` on a client does the same unprompted; the game gives client commands a
 dot and server commands a slash, and they are separate registries. What arrives is the real thing: skin, hair, clothes, armour, whatever
 you are wearing at that moment.
@@ -248,7 +352,7 @@ body, so a dedicated server — which ships no such library — never looks for 
 
 ### Admins only, for now
 
-Every `/mapstique` command already required `controlserver`; subcommands inherit it
+Every `/witchlight` command already required `controlserver`; subcommands inherit it
 from the root, which is how the game's command tree resolves a privilege. The new
 one is no different, and the client half now says so rather than letting a player
 run a command whose result the server will quietly refuse.
@@ -260,7 +364,7 @@ while every sibling said so in the log. They now say so too.
 
 ### The server log says where the map is
 
-`[mapstique] the map is being served at http://192.168.1.145:8080` now appears in
+`[witchlight] the map is being served at http://192.168.1.145:8080` now appears in
 the server's own log, beside everything else an operator is already reading,
 rather than only in the service's. The service publishes the addresses it answers
 on as it binds and this waits for that, because which addresses a bind of
@@ -269,7 +373,7 @@ on as it binds and this waits for that, because which addresses a bind of
 ### And so does a player joining
 
 A player is told where the map is as they join. `announce` in
-`ModConfig/mapstique.conf` turns it off, and `announce_url` says what to tell them
+`ModConfig/witchlight.conf` turns it off, and `announce_url` says what to tell them
 when it is not simply where the service is listening — a server on the open
 internet is reached at a name, through a proxy, on a port the service never sees,
 and only an operator knows that address. Both are read at each join, so turning
@@ -282,7 +386,7 @@ service, so nothing hands a player the address of a map that is gone.
 
 **Both halves must be upgraded together.** The settings file gained two keys, and
 a 0.13 service refuses a file it does not recognise every field of. An existing
-file is brought up to date, values kept, with `mapstique -c <file> --save-config -p`.
+file is brought up to date, values kept, with `witchlight -c <file> --save-config -p`.
 
 ## 0.13.0
 
@@ -294,16 +398,16 @@ this half knows the game, that half knows pixels, and a Vintage Story update can
 only break this one — but it is no longer a second thing to fetch, configure and
 remember to start.
 
-`ModConfig/mapstique.conf` holds its settings, written by the service itself on a
+`ModConfig/witchlight.conf` holds its settings, written by the service itself on a
 first run so that the file's format keeps the one owner it always had. Every
 option is live and editable there, including the new `autostart`: turn it off to
-run `mapstique serve` yourself, which is what a map that should stay up while the
+run `witchlight serve` yourself, which is what a map that should stay up while the
 game server is down wants.
 
-Everything the service prints goes to `Logs/mapstique-service.log`, on its own so
+Everything the service prints goes to `Logs/witchlight-service.log`, on its own so
 it can be tailed while it runs without a game server's log interleaved through it.
 
-`/mapstique service` says whether it is up; `start` and `stop` do what they say,
+`/witchlight service` says whether it is up; `start` and `stop` do what they say,
 and `start` runs it whatever `autostart` says, because somebody typing the command
 has asked. It is stopped with the game server, which is safe to do outright:
 everything it writes is put beside itself and renamed into place.
@@ -354,7 +458,7 @@ state the map service names out loud on start.
 
 ### The version now tracks the map service again
 
-This is numbered 0.12.1 to match [mapstique 0.12.1](../rust/mapstique). The skin
+This is numbered 0.12.1 to match [witchlight 0.12.1](../rust/mapstique). The skin
 colour work shipped here as 0.11.0 and there as 0.12.0, which left the two halves
 disagreeing about their own compatibility generation — the one thing the version
 is for.
@@ -373,7 +477,7 @@ So who is online now carries the **names** of the parts a player applied —
 `skin4`, `mossgreen`, `azure` — which the server can read, and an admin's client
 is asked once for what those names look like. One table covers everybody, it
 changes only when a mod adds variants, and it is merged across admins like
-palettes and icons. `/mapstique colors` asks for it again; `/mapstique colors` on
+palettes and icons. `/witchlight colors` asks for it again; `/witchlight colors` on
 a client sends it unprompted.
 
 ### Fixed
@@ -396,7 +500,7 @@ the entity's watched attributes, so nothing is asked of any client to show it.
 player sees relative to it, so a map counting from absolute zero agrees with
 nothing on their screen — a marker the map called `511900` is `-100` to them.
 
-`/mapstique status` reports whether those colours can actually be read, because a
+`/witchlight status` reports whether those colours can actually be read, because a
 player who comes out as a plain initial on the map and one whose colours are
 genuinely unreadable look identical from the far end.
 
@@ -427,7 +531,7 @@ Only what the server lacks is asked for, so a mod added later costs one icon
 rather than the whole set. Sliced by measured size rather than by count: an
 oversized packet disconnects the player sending it, and how many icons a mod set
 adds is not something this end gets to assume. An icon too large to be a map
-marker is dropped rather than sent. `/mapstique icons [player]` asks for
+marker is dropped rather than sent. `/witchlight icons [player]` asks for
 everything again, which is the way back if an icon on disk is wrong rather than
 missing. Icons from different admins are merged, like palettes.
 
@@ -441,7 +545,7 @@ attributes, so nothing is asked of anyone to show it.
 coordinate a player sees relative to it and a map that did not would agree with
 nothing on their screen.
 
-`/mapstique status` reports how many marker pictures are stored.
+`/witchlight status` reports how many marker pictures are stored.
 
 ## 0.8.0
 
@@ -473,7 +577,7 @@ any disagreement heals itself within one interval.
 
 ### Fixed
 
-`/mapstique status` reported one health reading for both halves of the live data,
+`/witchlight status` reported one health reading for both halves of the live data,
 and it was worse than useless. Players post every two seconds and markers every
 fifteen, so a succeeding player post overwrote a failing marker post almost at
 once: the line read `reaching …` while every marker was being refused. It now
@@ -513,7 +617,7 @@ touched.
 `live.json` is gone. Positions go to the service's API socket every two seconds
 and are never written to disk, because a position is worthless by the time a disk
 has finished with it. Markers go every fifteen seconds and only when they differ
-from the last post. `MAPSTIQUE_API_SOCKET` moves the socket; the service's
+from the last post. `WITCHLIGHT_API_SOCKET` moves the socket; the service's
 `api_socket` must agree.
 
 A service that cannot be reached is logged once rather than every tick, and the
@@ -530,6 +634,6 @@ game does not wait on any post.
 
 ### Says which build it is
 
-The version is logged on start and shown by `/mapstique status`, which also now
+The version is logged on start and shown by `/witchlight status`, which also now
 reports how many markers are saved on the server and whether the service is being
 reached.

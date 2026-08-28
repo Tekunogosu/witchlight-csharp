@@ -4,7 +4,7 @@ using System.IO;
 using System.Text;
 using Vintagestory.API.Common;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// The pictures a marker is drawn with.
@@ -61,7 +61,7 @@ public static class Icons
         }
         catch (Exception error)
         {
-            api.Logger.Warning("[mapstique] could not write marker icons: {0}", error.Message);
+            api.Logger.Warning("[witchlight] could not write marker icons: {0}", error.Message);
         }
 
         return (written, domains.Count == 0 ? "nowhere" : string.Join(", ", domains));

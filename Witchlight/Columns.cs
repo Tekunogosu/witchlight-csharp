@@ -4,7 +4,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// The regions an export is about to touch, with the columns that moved read in

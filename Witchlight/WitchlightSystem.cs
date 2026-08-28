@@ -5,18 +5,18 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
-/// Server-side export for the Mapstique map server.
+/// Server-side export for the Witchlight map server.
 ///
 /// The palette has to be built while block textures are still in memory: the
 /// server frees them once assets are loaded (Block.FreeRAMServer), so this hooks
 /// the asset stage rather than run time.
 /// </summary>
-public class MapstiqueSystem : ModSystem
+public class WitchlightSystem : ModSystem
 {
-    private const string ExportDirName = "mapstique";
+    private const string ExportDirName = "witchlight";
 
     private ICoreServerAPI? _sapi;
 
@@ -43,6 +43,7 @@ public class MapstiqueSystem : ModSystem
             SharedServer.SendTo(api, player);
             AskForPalette(player);
             AskForIcons(player);
+            AskForPortrait(player);
             SayWhereTheMapIs(player);
         });
         _service = new MapService(ExportDir, api.Logger);
@@ -82,11 +83,11 @@ public class MapstiqueSystem : ModSystem
             try
             {
                 File.Delete(stale);
-                api.Logger.Notification("[mapstique] removed live.json; live data goes over the socket");
+                api.Logger.Notification("[witchlight] removed live.json; live data goes over the socket");
             }
             catch (System.Exception error)
             {
-                api.Logger.Warning("[mapstique] could not remove live.json: {0}", error.Message);
+                api.Logger.Warning("[witchlight] could not remove live.json: {0}", error.Message);
             }
         }
 
@@ -120,14 +121,15 @@ public class MapstiqueSystem : ModSystem
         // mod from the one you meant to deploy. The map service prints its own for
         // the same reason, and the two must match on minor version.
         api.Logger.Notification(
-            "[mapstique] {0} ready, exporting every {1}s to {2}",
+            "[witchlight] {0} ready, exporting every {1}s to {2}",
             Mod.Info.Version,
             ExportIntervalMs / 1000,
             ExportDir);
 
         api.ChatCommands
-            .Create("mapstique")
-            .WithDescription("Mapstique map server tools")
+            .Create(Commands.Name)
+            .WithShortName(api)
+            .WithDescription("Witchlight map server tools")
             .RequiresPrivilege(Privilege.controlserver)
             .BeginSubCommand("export")
                 .WithDescription("Write the surface of every loaded chunk")
@@ -225,8 +227,8 @@ public class MapstiqueSystem : ModSystem
         if (!_serviceProcess.Wanted)
         {
             _sapi.Logger.Notification(
-                "[mapstique] autostart is off in {0}, so the map service was not started — "
-                + "run `mapstique serve` yourself to serve the map",
+                "[witchlight] autostart is off in {0}, so the map service was not started — "
+                + "run `witchlight serve` yourself to serve the map",
                 ServiceProcess.ConfigPath);
             return;
         }
@@ -264,7 +266,7 @@ public class MapstiqueSystem : ModSystem
             if (_reported.Add($"{what}/{error.GetType().Name}"))
             {
                 _sapi?.Logger.Error(
-                    "[mapstique] {0} failed, and this will not be reported again: {1}", what, error);
+                    "[witchlight] {0} failed, and this will not be reported again: {1}", what, error);
             }
         }
     }
@@ -382,14 +384,14 @@ public class MapstiqueSystem : ModSystem
                 + (stale.Count > 0 ? $", season moved in {stale.Count}" : "")
                 + $", {_seasons.Count} chunks mapped, in {clock.ElapsedMilliseconds}ms on {reason}"
                 + (set.Unloaded.Count > 0 ? $", {set.Unloaded.Count} no longer loaded" : "");
-            _sapi.Logger.Notification("[mapstique] {0}", message);
+            _sapi.Logger.Notification("[witchlight] {0}", message);
             return message;
         }
         catch (System.Exception error)
         {
             // Nothing was written, so what was taken is still owed.
             _dirty.Restore(wanted);
-            _sapi.Logger.Error("[mapstique] export failed: {0}", error);
+            _sapi.Logger.Error("[witchlight] export failed: {0}", error);
             return null;
         }
     }
@@ -445,7 +447,7 @@ public class MapstiqueSystem : ModSystem
         if (spawn is null)
         {
             _sapi.Logger.Warning(
-                "[mapstique] the world has no spawn point yet, so the map was not seeded — "
+                "[witchlight] the world has no spawn point yet, so the map was not seeded — "
                 + "it will fill in as players explore");
             return;
         }
@@ -454,7 +456,7 @@ public class MapstiqueSystem : ModSystem
         var centerZ = spawn.Value.Z / size;
 
         _sapi.Logger.Notification(
-            "[mapstique] loading {0}x{0} chunks around spawn to seed the map",
+            "[witchlight] loading {0}x{0} chunks around spawn to seed the map",
             radius * 2 + 1);
 
         _sapi.WorldManager.LoadChunkColumnPriority(
@@ -494,7 +496,7 @@ public class MapstiqueSystem : ModSystem
         {
             return TextCommandResult.Error(
                 "there is no bundled map service on this machine — see the server log, and run "
-                + "`mapstique serve` yourself to serve the map");
+                + "`witchlight serve` yourself to serve the map");
         }
 
         return action switch
@@ -629,7 +631,7 @@ public class MapstiqueSystem : ModSystem
         _sapi.Network.GetChannel(SharedServer.Channel)
             .SendPacket(new PaletteRequest { Fingerprint = _fingerprint }, player);
         _sapi.Logger.Notification(
-            "[mapstique] asked {0} for a block colour palette", player.PlayerName);
+            "[witchlight] asked {0} for a block colour palette", player.PlayerName);
 
         // Silence is otherwise indistinguishable from success at a glance.
         var uid = player.PlayerUID;
@@ -639,7 +641,7 @@ public class MapstiqueSystem : ModSystem
             if (_needsPalette && _askedUid == uid)
             {
                 _sapi.Logger.Notification(
-                    "[mapstique] no palette came back from {0} — check that they have the mod, "
+                    "[witchlight] no palette came back from {0} — check that they have the mod, "
                     + "and their client log for why it declined",
                     name);
             }
@@ -669,11 +671,131 @@ public class MapstiqueSystem : ModSystem
     }
 
     /// <summary>
+    /// Asks a player who has just joined to draw themselves.
+    ///
+    /// Everyone, not only an admin: a portrait decides what one card looks like and
+    /// that card is the sender's own, so there is nothing here to be trusted with.
+    /// Asked on every join rather than once ever, because a seraph that changed
+    /// while its player was away is a picture that is now wrong, and only the
+    /// machine that can see it knows the difference.
+    ///
+    /// Not at once. A client at the moment the server calls it playing is still
+    /// finding its feet — the world is drawn but the seraph may not be — and a
+    /// picture taken then is of nothing at all. This is the pause that costs
+    /// nobody anything and saves an empty portrait on every join.
+    /// </summary>
+    private void AskForPortrait(IServerPlayer player)
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        _sapi.Event.RegisterCallback(_ => Safely("asking for a portrait", () =>
+        {
+            // They may well have left in the meantime, and a packet to somebody
+            // who is gone is at best wasted.
+            if (player.ConnectionState != EnumClientState.Playing)
+            {
+                return;
+            }
+
+            Ask(player);
+        }), PortraitAskDelayMs);
+    }
+
+    /// <summary>
+    /// Asks one player to draw themselves, and remembers having asked.
+    ///
+    /// The only place an ask is sent, so that a picture arriving afterwards can be
+    /// recognised as the answer to one. Nothing else can put a name in that table,
+    /// which is what makes it safe to let an answer past the floor.
+    /// </summary>
+    private void Ask(IServerPlayer player)
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        Forget(_portraitAsked, PortraitAnswerWindowMs);
+        _portraitAsked[player.PlayerUID] = System.DateTime.UtcNow;
+        _sapi.Network.GetChannel(SharedServer.Channel).SendPacket(new PortraitRequest(), player);
+    }
+
+    /// <summary>
+    /// Whether this picture answers an ask — and takes that ask when it does, so
+    /// one ask buys one picture rather than a window of them.
+    /// </summary>
+    private bool AnswersAnAsk(IServerPlayer player)
+    {
+        Forget(_portraitAsked, PortraitAnswerWindowMs);
+        return _portraitAsked.Remove(player.PlayerUID);
+    }
+
+    /// <summary>
+    /// Drops what is old enough to no longer decide anything, so a table of times
+    /// stays a table of recent ones rather than a name per player the server has
+    /// ever seen.
+    /// </summary>
+    private static void Forget(Dictionary<string, System.DateTime> times, int olderThanMs)
+    {
+        var cutoff = System.DateTime.UtcNow - System.TimeSpan.FromMilliseconds(olderThanMs);
+        foreach (var uid in times.Where(at => at.Value <= cutoff).Select(at => at.Key).ToList())
+        {
+            times.Remove(uid);
+        }
+    }
+
+    /// <summary>
+    /// How long ago this player's last picture was, when that is too recent to take
+    /// another — and nothing when it is not.
+    ///
+    /// An honest client sends one unasked only once its character has been left
+    /// alone for the quiet period, so nothing legitimate arrives this close
+    /// together. This is the floor under a client that is not honest: what it can
+    /// make the server write is capped in size where a picture is filed, and in
+    /// rate here.
+    /// </summary>
+    private System.TimeSpan? TooSoonFor(IServerPlayer player)
+    {
+        if (!_portraitAt.TryGetValue(player.PlayerUID, out var last))
+        {
+            return null;
+        }
+
+        var waited = System.DateTime.UtcNow - last;
+        return waited < System.TimeSpan.FromMilliseconds(Portraits.FloorMs) ? waited : null;
+    }
+
+    /// <summary>
+    /// Notes that a picture has been taken from this player, so the next one they
+    /// send unasked is measured against this moment.
+    /// </summary>
+    private void TookOneFrom(IServerPlayer player)
+    {
+        Forget(_portraitAt, Portraits.FloorMs);
+        _portraitAt[player.PlayerUID] = System.DateTime.UtcNow;
+    }
+
+    /// <summary>When each player's last unasked-for picture arrived.</summary>
+    private readonly Dictionary<string, System.DateTime> _portraitAt = new();
+
+    /// <summary>Who has been asked for a picture and not yet answered.</summary>
+    private readonly Dictionary<string, System.DateTime> _portraitAsked = new();
+
+    /// <summary>
     /// Takes a player's picture of themselves.
     ///
     /// Filed under who sent it rather than under anything in the message: a client
-    /// says what it looks like, not who it is. Admins only, for now — the same rule
-    /// every other thing a client sends the map already follows.
+    /// says what it looks like, not who it is. Anyone may send one, unlike the
+    /// palette and the marker pictures — those decide what everybody sees and this
+    /// decides only what its own sender looks like, which is a thing they are
+    /// already entitled to be wrong about.
+    ///
+    /// That does open a write to every client rather than to a handful of trusted
+    /// ones, so how often one may arrive is answered here and how large it may be
+    /// is answered where it is filed.
     /// </summary>
     private void OnPortraitFromClient(IServerPlayer player, PlayerPortrait portrait)
     {
@@ -682,21 +804,33 @@ public class MapstiqueSystem : ModSystem
             return;
         }
 
-        if (!player.HasPrivilege(Privilege.controlserver))
+        // A picture the server asked for is expected, however soon after the last
+        // one it lands: a player who joins and then types the command a second
+        // later has done nothing wrong, and their second picture must not vanish
+        // into a log line while their own screen says it was sent. The floor is
+        // for what a client sends of its own accord.
+        if (!AnswersAnAsk(player))
         {
-            _sapi.Logger.Warning(
-                "[mapstique] ignored a portrait from {0}, who is not an admin", player.PlayerName);
-            return;
+            if (TooSoonFor(player) is { } wait)
+            {
+                _sapi.Logger.Warning(
+                    "[witchlight] ignored a portrait from {0}, sent unasked {1:0.#}s after "
+                    + "the last one; unasked pictures are taken no closer together than {2}s",
+                    player.PlayerName, wait.TotalSeconds, Portraits.FloorMs / 1000);
+                return;
+            }
+
+            TookOneFrom(player);
         }
 
         if (Portraits.Save(ExportDir, player.PlayerUID, portrait.Png, out var said))
         {
-            _sapi.Logger.Notification("[mapstique] portrait from {0} ({1})", player.PlayerName, said);
+            _sapi.Logger.Notification("[witchlight] portrait from {0} ({1})", player.PlayerName, said);
         }
         else
         {
             _sapi.Logger.Warning(
-                "[mapstique] ignored a portrait from {0}: {1}", player.PlayerName, said);
+                "[witchlight] ignored a portrait from {0}: {1}", player.PlayerName, said);
         }
     }
 
@@ -728,13 +862,7 @@ public class MapstiqueSystem : ModSystem
                 : $"{args[0]} is not online");
         }
 
-        if (!target.HasPrivilege(Privilege.controlserver))
-        {
-            return TextCommandResult.Error(
-                $"{target.PlayerName} is not an admin; pictures are only taken from admins");
-        }
-
-        _sapi.Network.GetChannel(SharedServer.Channel).SendPacket(new PortraitRequest(), target);
+        Ask(target);
         return TextCommandResult.Success($"asked {target.PlayerName} to draw themselves");
     }
 
@@ -789,7 +917,7 @@ public class MapstiqueSystem : ModSystem
         if (!player.HasPrivilege(Privilege.controlserver))
         {
             _sapi.Logger.Warning(
-                "[mapstique] ignored marker pictures from {0}, who is not an admin", player.PlayerName);
+                "[witchlight] ignored marker pictures from {0}, who is not an admin", player.PlayerName);
             return;
         }
 
@@ -797,7 +925,7 @@ public class MapstiqueSystem : ModSystem
         if (written > 0)
         {
             _sapi.Logger.Notification(
-                "[mapstique] {0} marker pictures from {1} ({2} in total now)",
+                "[witchlight] {0} marker pictures from {1} ({2} in total now)",
                 written, player.PlayerName, IconCount());
         }
     }
@@ -822,6 +950,25 @@ public class MapstiqueSystem : ModSystem
     private const int PaletteReplyWaitMs = 30000;
 
     /// <summary>
+    /// How long after a join before a player is asked to draw themselves.
+    ///
+    /// The server calls them playing before their client has finished getting
+    /// there, and a seraph that is not loaded yet renders as an empty picture the
+    /// client then reports it could not draw. A few seconds is the whole of the fix.
+    /// </summary>
+    private const int PortraitAskDelayMs = 8000;
+
+    /// <summary>
+    /// How long an ask stands before the server stops expecting an answer to it.
+    ///
+    /// A client draws on its next frame, so an answer is normally back in well
+    /// under a second. This is long enough to cover one that is busy and short
+    /// enough that an ask nobody answered does not sit there excusing a picture
+    /// sent much later for a different reason.
+    /// </summary>
+    private const int PortraitAnswerWindowMs = 60000;
+
+    /// <summary>
     /// Takes a palette from an admin's client and keeps whatever it adds.
     ///
     /// Merged rather than replaced: a client only has textures for the mods it has
@@ -838,14 +985,14 @@ public class MapstiqueSystem : ModSystem
         if (!player.HasPrivilege(Privilege.controlserver))
         {
             _sapi.Logger.Warning(
-                "[mapstique] ignored a palette from {0}, who is not an admin", player.PlayerName);
+                "[witchlight] ignored a palette from {0}, who is not an admin", player.PlayerName);
             return;
         }
 
         if (table.Fingerprint != _fingerprint)
         {
             _sapi.Logger.Warning(
-                "[mapstique] ignored a palette from {0}: it was built for a different mod set",
+                "[witchlight] ignored a palette from {0}: it was built for a different mod set",
                 player.PlayerName);
             return;
         }
@@ -880,7 +1027,7 @@ public class MapstiqueSystem : ModSystem
         _askedUid = null;
 
         _sapi.Logger.Notification(
-            "[mapstique] palette from {0}: {1} of {2} blocks coloured ({3:P0}){4}",
+            "[witchlight] palette from {0}: {1} of {2} blocks coloured ({3:P0}){4}",
             player.PlayerName,
             merged.Coloured,
             merged.Textured,
@@ -979,29 +1126,29 @@ public class MapstiqueSystem : ModSystem
         if (_needsPalette)
         {
             api.Logger.Notification(
-                "[mapstique] only {0:P0} of blocks have a colour — an admin will be asked for a palette on join",
+                "[witchlight] only {0:P0} of blocks have a colour — an admin will be asked for a palette on join",
                 palette.Coverage);
         }
 
         var colorMaps = PaletteBuilder.ExportColorMaps(api, Path.Combine(ExportDir, "colormaps"));
-        api.Logger.Notification("[mapstique] colour maps: {0} written", colorMaps);
+        api.Logger.Notification("[witchlight] colour maps: {0} written", colorMaps);
 
         var (icons, from) = Icons.Export(api, ExportDir);
-        api.Logger.Notification("[mapstique] marker icons: {0} written, from {1}", icons, from);
+        api.Logger.Notification("[witchlight] marker icons: {0} written, from {1}", icons, from);
 
         api.Logger.Notification(
-            "[mapstique] palette: {0} blocks written to {1}{2}",
+            "[witchlight] palette: {0} blocks written to {1}{2}",
             palette.Blocks.Count,
             path,
             missing > 0 ? $" ({missing} without a readable texture)" : "");
 
         foreach (var group in PaletteBuilder.FailureCounts.OrderByDescending(entry => entry.Value).Take(12))
         {
-            api.Logger.Notification("[mapstique] missing group {0}: {1}", group.Key, group.Value);
+            api.Logger.Notification("[witchlight] missing group {0}: {1}", group.Key, group.Value);
         }
         foreach (var failure in PaletteBuilder.Failures)
         {
-            api.Logger.Notification("[mapstique] skipped {0}", failure);
+            api.Logger.Notification("[witchlight] skipped {0}", failure);
         }
     }
 
@@ -1015,7 +1162,7 @@ public class MapstiqueSystem : ModSystem
         var blocks = api.World.Blocks;
         var withTextures = blocks.Count(block => block?.Textures is { Count: > 0 });
         api.Logger.Notification(
-            "[mapstique] {0}: {1} of {2} blocks have textures in memory",
+            "[witchlight] {0}: {1} of {2} blocks have textures in memory",
             stage,
             withTextures,
             blocks.Count);

@@ -9,7 +9,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// The map service, run as a child of the game server.
@@ -28,10 +28,10 @@ namespace Mapstique;
 public sealed class ServiceProcess : IDisposable
 {
     /// <summary>Where the binary sits inside the mod archive.</summary>
-    private const string BundledAt = "service/linux-x64/mapstique";
+    private const string BundledAt = "service/linux-x64/witchlight";
 
     /// <summary>What it is called once unpacked, and in the log.</summary>
-    private const string Name = "mapstique";
+    private const string Name = "witchlight";
 
     private readonly ICoreServerAPI _api;
     private readonly string _executable;
@@ -54,10 +54,10 @@ public sealed class ServiceProcess : IDisposable
     }
 
     /// <summary>The settings both halves read, beside the server's other mod settings.</summary>
-    public static string ConfigPath => Path.Combine(GamePaths.ModConfig, "mapstique.conf");
+    public static string ConfigPath => Path.Combine(GamePaths.ModConfig, "witchlight.conf");
 
     /// <summary>Everything the service says, on its own so it can be tailed.</summary>
-    public static string LogPath => Path.Combine(GamePaths.Logs, "mapstique-service.log");
+    public static string LogPath => Path.Combine(GamePaths.Logs, "witchlight-service.log");
 
     /// <summary>Whether a service of ours is running right now.</summary>
     public bool Running => _process is { HasExited: false };
@@ -73,8 +73,8 @@ public sealed class ServiceProcess : IDisposable
             || RuntimeInformation.ProcessArchitecture != Architecture.X64)
         {
             api.Logger.Notification(
-                "[mapstique] no bundled map service for {0} {1} — the map will export as usual, "
-                + "and `mapstique serve` run yourself will serve it",
+                "[witchlight] no bundled map service for {0} {1} — the map will export as usual, "
+                + "and `witchlight serve` run yourself will serve it",
                 RuntimeInformation.OSDescription,
                 RuntimeInformation.ProcessArchitecture);
             return null;
@@ -261,13 +261,13 @@ public sealed class ServiceProcess : IDisposable
             _process = process;
 
             _api.Logger.Notification(
-                "[mapstique] map service started (pid {0}), logging to {1}", process.Id, LogPath);
+                "[witchlight] map service started (pid {0}), logging to {1}", process.Id, LogPath);
             SayWhereItIsListening();
             return $"the map service is running (pid {process.Id}), logging to {LogPath}";
         }
         catch (Exception error)
         {
-            _api.Logger.Error("[mapstique] could not start the map service: {0}", error);
+            _api.Logger.Error("[witchlight] could not start the map service: {0}", error);
             return $"could not start the map service: {error.Message}";
         }
     }
@@ -303,11 +303,11 @@ public sealed class ServiceProcess : IDisposable
         }
     }
 
-    /// <summary>One line for `/mapstique status`.</summary>
+    /// <summary>One line for `/witchlight status`.</summary>
     public string Describe() => Running
         ? $"service: running (pid {_process!.Id}), log at {LogPath}"
         : Wanted
-            ? $"service: not running — see {LogPath}, and `/mapstique service start`"
+            ? $"service: not running — see {LogPath}, and `/witchlight service start`"
             : "service: not started, autostart is off in " + _config;
 
     /// <summary>
@@ -320,7 +320,7 @@ public sealed class ServiceProcess : IDisposable
     /// </summary>
     private static string? Unpack(ICoreServerAPI api, Mod mod)
     {
-        var into = Path.Combine(GamePaths.Cache, "mapstique");
+        var into = Path.Combine(GamePaths.Cache, "witchlight");
         var executable = Path.Combine(into, Name);
 
         try
@@ -373,12 +373,12 @@ public sealed class ServiceProcess : IDisposable
                 | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
                 | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
-            api.Logger.Notification("[mapstique] unpacked the map service to {0}", executable);
+            api.Logger.Notification("[witchlight] unpacked the map service to {0}", executable);
             return executable;
         }
         catch (Exception error)
         {
-            api.Logger.Error("[mapstique] could not unpack the map service: {0}", error);
+            api.Logger.Error("[witchlight] could not unpack the map service: {0}", error);
             return null;
         }
     }
@@ -386,8 +386,8 @@ public sealed class ServiceProcess : IDisposable
     private static string? Missing(ICoreServerAPI api, string source)
     {
         api.Logger.Warning(
-            "[mapstique] {0} carries no map service at {1} — it was packaged without one. "
-            + "The map will export as usual, and `mapstique serve` run yourself will serve it",
+            "[witchlight] {0} carries no map service at {1} — it was packaged without one. "
+            + "The map will export as usual, and `witchlight serve` run yourself will serve it",
             source, BundledAt);
         return null;
     }
@@ -438,16 +438,16 @@ public sealed class ServiceProcess : IDisposable
             if (!File.Exists(config))
             {
                 api.Logger.Warning(
-                    "[mapstique] the map service did not write {0}: {1}", config, complaint.Trim());
+                    "[witchlight] the map service did not write {0}: {1}", config, complaint.Trim());
                 return null;
             }
 
-            api.Logger.Notification("[mapstique] wrote default map settings to {0}", config);
+            api.Logger.Notification("[witchlight] wrote default map settings to {0}", config);
             return config;
         }
         catch (Exception error)
         {
-            api.Logger.Error("[mapstique] could not write {0}: {1}", config, error);
+            api.Logger.Error("[witchlight] could not write {0}: {1}", config, error);
             return null;
         }
     }
@@ -477,7 +477,7 @@ public sealed class ServiceProcess : IDisposable
 
                 if (Address(exports) is { } at)
                 {
-                    _api.Logger.Notification("[mapstique] the map is being served at {0}", at);
+                    _api.Logger.Notification("[witchlight] the map is being served at {0}", at);
                     return;
                 }
 
@@ -485,7 +485,7 @@ public sealed class ServiceProcess : IDisposable
             }
 
             _api.Logger.Warning(
-                "[mapstique] the map service has not said where it is listening. See {0}", LogPath);
+                "[witchlight] the map service has not said where it is listening. See {0}", LogPath);
         });
     }
 
@@ -546,14 +546,14 @@ public sealed class ServiceProcess : IDisposable
 
         if (_stopping)
         {
-            Say($"mapstique: stopped (exit {code})");
+            Say($"witchlight: stopped (exit {code})");
             return;
         }
 
-        Say($"mapstique: stopped on its own (exit {code})");
+        Say($"witchlight: stopped on its own (exit {code})");
         _api.Logger.Warning(
-            "[mapstique] the map service stopped on its own (exit {0}). See {1}, and "
-            + "`/mapstique service start` to run it again",
+            "[witchlight] the map service stopped on its own (exit {0}). See {1}, and "
+            + "`/witchlight service start` to run it again",
             code, LogPath);
     }
 

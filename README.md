@@ -1,9 +1,9 @@
-# Mapstique (server mod)
+# Witchlight (server mod)
 
-The Vintage Story half of Mapstique. It exports what a map renderer needs, and
+The Vintage Story half of Witchlight. It exports what a map renderer needs, and
 shares every player's map markers with everyone on the server.
 
-The renderer is a separate program, [`mapstique`](../rust/mapstique), which takes
+The renderer is a separate program, [`witchlight`](../rust/mapstique), which takes
 what this side produces and serves a browsable map. This side knows the game; that
 side knows pixels. Keeping the game-coupled code here and small is deliberate: a
 Vintage Story update can only ever break this half.
@@ -17,10 +17,11 @@ decides what terrain looks like and the **marker pictures** are SVGs it has none
 of; both are asked of an admin, merged across admins, and stored so they are asked
 once rather than per join. A **portrait** is the third and is different in kind:
 what a seraph looks like exists only where it is rendered, so a player's own client
-draws one and sends the picture.
+draws one and sends the picture. Every player is asked on every join, and a client
+sends another thirty seconds after its character last changed.
 
 Versions track the [map service](../rust/mapstique) and **must match on minor
-version**. A format change clears the map while Mapstique is alpha — see
+version**. A format change clears the map while Witchlight is alpha — see
 [CHANGELOG.md](CHANGELOG.md).
 
 ## What it does
@@ -37,10 +38,10 @@ worthless by the time a disk has finished with it.
 | who is online, where, their health and food, and which portrait is theirs | posted to the service | every 2s |
 | every marker | posted to the service | every 15s, when they differ from the last post |
 | the picture each marker is drawn with | `icons/{name}.svg` | at asset load, or when a client sends them |
-| a picture of a player's seraph | `portraits/{uid in hex}.png` | when their client sends one |
+| a picture of a player's seraph | `portraits/{uid in hex}.png` | on their every join, and 30s after their character last changed |
 | where the world counts from | `world.json` | at start |
 
-The files land in `<data path>/mapstique`. The service listens for posts on its
+The files land in `<data path>/witchlight`. The service listens for posts on its
 API socket — a unix socket in `/tmp`, named after that directory so both sides
 find it without being told. See [API.md](API.md). Ten seconds after start it loads a 17×17
 block of chunk columns around spawn and exports those, so a fresh server has a map
@@ -69,13 +70,13 @@ per chunk, so a year advancing a step rewrites every region that holds a chunk
 whose season changed. That is roughly every twenty minutes on the default
 calendar.
 
-**The format still moves.** Mapstique is alpha, so a map on disk that this build
+**The format still moves.** Witchlight is alpha, so a map on disk that this build
 cannot read is cleared on start and rebuilt as players explore, rather than
 upgraded in place. Carrying a reader for every shape the file has ever had is a
 permanent cost for the sake of maps that are days old. It says so in the log when
 it happens.
 
-`/mapstique export` ignores all of that and reads every loaded chunk again, which
+`/witchlight export` ignores all of that and reads every loaded chunk again, which
 is the way back if the map and the world ever disagree.
 
 It also pushes every player the markers belonging to everyone else, and adds them
@@ -89,7 +90,7 @@ not, however, a second thing to install. A Linux x64 build rides along inside th
 archive, is unpacked to the game's `Cache` folder on first run, and is started
 once the world is ready.
 
-Its settings are `mapstique.conf` in the game's `ModConfig` folder, written by the
+Its settings are `witchlight.conf` in the game's `ModConfig` folder, written by the
 service itself on a first run — the format has one owner and this half does not
 write it. Every option is editable there, including:
 
@@ -98,14 +99,14 @@ write it. Every option is editable there, including:
 autostart = true
 ```
 
-Turn `autostart` off to run `mapstique serve` by hand instead, which is what a map
-that should stay up while the game server is down wants. `/mapstique service start`
+Turn `autostart` off to run `witchlight serve` by hand instead, which is what a map
+that should stay up while the game server is down wants. `/witchlight service start`
 still runs it on demand.
 
 Where the map ended up listening goes in the server's own log as it comes up:
 
 ```
-[mapstique] the map is being served at http://192.168.1.145:8080
+[witchlight] the map is being served at http://192.168.1.145:8080
 ```
 
 The service works that out — `0.0.0.0` is not something anyone can type into a
@@ -135,11 +136,11 @@ one rather than on the next restart. Nothing is said when there is no address to
 give: a service that is not running, one somebody else runs somewhere this cannot
 see, or a server whose real address its operator has not said.
 
-Everything the service prints goes to `Logs/mapstique-service.log`, on its own so
+Everything the service prints goes to `Logs/witchlight-service.log`, on its own so
 it can be tailed while it runs:
 
 ```sh
-tail -f VintagestoryData/Logs/mapstique-service.log
+tail -f VintagestoryData/Logs/witchlight-service.log
 ```
 
 The service is stopped with the game server, which is safe to do outright:
@@ -177,7 +178,7 @@ server boot ─► fingerprint the block registry
              ─► palette stored for this fingerprint, and good enough?  ──yes──► done
                           │no
                           ▼
-      an admin joins, or /mapstique palette ─► "send me a palette"
+      an admin joins, or /witchlight palette ─► "send me a palette"
                           ▼
       client builds one from its own assets ─► six packets ─► merged and written
 ```
@@ -215,7 +216,10 @@ change does.
 
 ## Server commands
 
-All under `/mapstique`, requiring `controlserver`.
+All under `/witchlight`, requiring `controlserver`. `/wl` is the same tree under a
+shorter name, on both sides — claimed only where no other mod already answers to
+it, since the game hands out an alias by overwriting whatever holds the name. The
+long name is always registered, so it is the one written down here.
 
 | | |
 |---|---|
@@ -225,22 +229,38 @@ All under `/mapstique`, requiring `controlserver`.
 | `icons [player]` | ask an online admin for every marker picture again |
 | `export` | write the surface of every loaded chunk immediately |
 
-| `portrait [player]` | ask a player's client for a picture of their character |
+| `portrait [player]` | ask a player's client for a picture of their character now |
 
 Only that player's own machine can draw it — nobody else's has their seraph loaded
 — so the server asks and the picture comes back. The map then shows it in their
-card in place of a face assembled from three colours.
+card, and their initial where there is none.
+
+**Nobody has to ask.** Every player is asked eight seconds after joining, and their
+client sends another thirty seconds after their character last changed — a change
+restarts that wait rather than sending, so a run of them is one picture. The
+command is for wanting one sooner than that, and a player may use it **once every
+five minutes**: nothing that keeps the map current depends on it, so nobody waiting
+that out is waiting for their own face to appear.
+
+**Any player, not only an admin.** A portrait decides what one card looks like and
+that card is the sender's own, unlike the palette and the marker pictures, which
+decide what everybody sees. What that opens is a write to every client, so a
+picture is capped at 512 KiB, one identical to the file already stored is not
+written at all, and one a client sends **unasked** is taken no closer together than
+twenty-five seconds — just under the quiet period, which is the fastest an honest
+client sends on its own. A picture the server asked for is not counted against
+that floor: it knows how often it asks, and one ask buys one picture.
 
 **A dot, not a slash, on a client.** The game keeps client and server commands in
-separate registries and gives them different prefixes, so `.mapstique portrait`
-is the client drawing itself unprompted while `/mapstique portrait` is the server
+separate registries and gives them different prefixes, so `.witchlight portrait`
+is the client drawing itself unprompted while `/witchlight portrait` is the server
 asking it to. The same holds for `palette` and `icons`, which exist on
 both sides for that reason.
 
-Everything under `/mapstique` requires `controlserver`. Subcommands inherit it from
+Everything under `/witchlight` requires `controlserver`. Subcommands inherit it from
 the root, which is how the game resolves a privilege down a command tree.
 
-`/mapstique status` is the first thing to look at when the map looks wrong: it
+`/witchlight status` is the first thing to look at when the map looks wrong: it
 says whether the palette is the server's own poor one or a good one from a client.
 
 ## Reading the surface
@@ -301,7 +321,7 @@ Needs the .NET 10 SDK and a Vintage Story install. The game directory is taken
 from `$VINTAGE_STORY`, falling back to `~/.local/share/vintagestory`.
 
 ```sh
-./package.sh                     # a server archive: dist/mapstique_<version>.zip
+./package.sh                     # a server archive: dist/witchlight_<version>.zip
 ./package.sh --target client     # without the service: ..._<version>_client.zip
 ./package.sh --install ~/.config/VintagestoryData/Mods    # and drop it in place
 ./package.sh --no-build          # repackage what was built last
@@ -315,12 +335,12 @@ server is handed the map service and a client has no use for a megabyte of it �
 42 KiB against 971. The client archive carries `_client` in its name so that both
 can sit in `dist/` at once rather than one quietly overwriting the other.
 
-The map service is looked for in `/var/tmp/rust-target/release/mapstique` and
-`../rust/mapstique/target/release/mapstique`, or wherever `$MAPSTIQUE_SERVICE`
+The map service is looked for in `/var/tmp/rust-target/release/witchlight` and
+`../rust/mapstique/target/release/witchlight`, or wherever `$WITCHLIGHT_SERVICE`
 says. Packaging **stops** when there is none, rather than quietly producing a mod
 that exports a map it cannot serve; `--no-service` is how to mean it.
 
-The archive holds `modinfo.json` and `Mapstique.dll` at its root, plus the map
+The archive holds `modinfo.json` and `Witchlight.dll` at its root, plus the map
 service under `service/linux-x64/` on a server build, named
 `<modid>_<version>.zip` — the layout the mod database expects on upload, and the
 same file a server can be handed directly. `modinfo.json` is the only place the

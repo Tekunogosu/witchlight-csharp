@@ -4,8 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
-    <AssemblyName>Mapstique</AssemblyName>
-    <RootNamespace>Mapstique</RootNamespace>
+    <AssemblyName>Witchlight</AssemblyName>
+    <RootNamespace>Witchlight</RootNamespace>
     <!-- The mod is loaded by the game, which supplies these assemblies. -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

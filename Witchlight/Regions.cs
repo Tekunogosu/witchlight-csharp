@@ -5,7 +5,7 @@ using System.IO.Compression;
 using System.Numerics;
 using Vintagestory.API.Common;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// The map on disk: one file per square of chunks, each holding the same records
@@ -234,7 +234,7 @@ public static class Regions
     /// <summary>
     /// Throws away a map this build cannot read, so that one can be built again.
     ///
-    /// Mapstique is alpha and this format still moves. Reading an older one and
+    /// Witchlight is alpha and this format still moves. Reading an older one and
     /// upgrading it means carrying a reader for every shape the file has ever
     /// had, permanently, for the sake of maps that are days old. The map rebuilds
     /// itself from the world as players move through it, so starting again costs
@@ -264,12 +264,12 @@ public static class Regions
         }
         catch (Exception error)
         {
-            log?.Error("[mapstique] could not clear the old map: {0}", error);
+            log?.Error("[witchlight] could not clear the old map: {0}", error);
             return false;
         }
 
         log?.Notification(
-            "[mapstique] {0} — the map has been cleared and will rebuild as players explore",
+            "[witchlight] {0} — the map has been cleared and will rebuild as players explore",
             reason);
         return true;
     }

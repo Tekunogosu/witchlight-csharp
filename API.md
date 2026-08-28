@@ -1,19 +1,19 @@
-# Mapstique interfaces
+# Witchlight interfaces
 
-Every way the two halves of Mapstique talk: to each other, to the game, to a
+Every way the two halves of Witchlight talk: to each other, to the game, to a
 browser, and to the disk.
 
-Mapstique is two programs. The **mod** runs inside the Vintage Story server and
-knows the game. The **service** (`mapstique`, a separate binary) knows pixels and
+Witchlight is two programs. The **mod** runs inside the Vintage Story server and
+knows the game. The **service** (`witchlight`, a separate binary) knows pixels and
 serves the map. Neither is useful alone, and the seams between them are all here.
 
 ```
    players ──in-game map──┐
                           │
   ┌───────────────────────┴────────────┐        ┌──────────────────────────┐
-  │  Vintage Story server              │        │  mapstique service       │
+  │  Vintage Story server              │        │  witchlight service       │
   │  ┌──────────────────────────────┐  │        │                          │
-  │  │ Mapstique mod                │  │        │                          │
+  │  │ Witchlight mod                │  │        │                          │
   │  │                              │  │ files  │                          │
   │  │   terrain, palette  ─────────┼──┼───────►│  reads on change         │
   │  │                              │  │        │                          │
@@ -82,7 +82,7 @@ the west and the one to the north. Those neighbours are in the list already.
 
 ```json
 {"Players":[{"Name":"ada","Uid":"...","X":511900,"Y":110,"Z":511901,
-              "Portrait":"6164..."}],
+              "Portrait":"6164...","PortraitAt":1756315231}],
  "Waypoints":[{"Title":"Forge","Icon":"circle","Color":"#00ff00",
                "X":511810,"Y":110,"Z":511810,"Owner":"ada",
                "OwnerUid":"...","Pinned":false}]}
@@ -103,6 +103,15 @@ Empty is empty. Nothing here reads a file this build does not write, so an empty
 hex — a uid is base64 and carries `/` and `+`, which is a path rather than a name —
 and the mod decides it, so nothing else has to derive the same answer.
 
+`PortraitAt` is when that picture was written, in seconds, or `0` where there is
+none. **Ask for `/portraits/{Portrait}.png?v={PortraitAt}`**, not the bare path: a
+player who is redrawn keeps the name they had, so the name alone is the same before
+and after and neither a browser nor anything diffing one report against the last
+could tell that the picture behind it had changed. The service ignores the query
+when it routes and serves the file either way; the query exists so that the address
+changes when the picture does. It moves only when bytes were actually written, so a
+player who takes a hat off and puts it back gets the same address again.
+
 ## The service, on its API socket
 
 A second listener that accepts **writes**, which is why it is not on the map port:
@@ -112,7 +121,7 @@ are not there.
 By default a unix socket in `/tmp`, named after the export directory:
 
 ```
-/tmp/mapstique-{fnv1a32 of the export path}.sock
+/tmp/witchlight-{fnv1a32 of the export path}.sock
 ```
 
 A socket is how two programs talk, not something either of them keeps, so it
@@ -124,7 +133,7 @@ silent. It also keeps the address at 28 bytes, far inside the hundred-odd a unix
 socket allows; a socket beside a data directory several levels deep can exceed it.
 
 Both sides read the same setting to move it: `api_socket` in the service's config
-file (or `-a`), and `MAPSTIQUE_API_SOCKET` for the mod. A value with a colon and
+file (or `-a`), and `WITCHLIGHT_API_SOCKET` for the mod. A value with a colon and
 no separator is a `host:port`; anything else is a unix socket path.
 
 **Both programs must run as the same user**, or the socket's permissions must be
@@ -150,12 +159,12 @@ tick.
 
 ## Files
 
-All under `<data path>/mapstique`. The mod writes, the service reads, except
+All under `<data path>/witchlight`. The mod writes, the service reads, except
 where noted.
 
 Two live elsewhere, because they belong to the server rather than to the map:
-`<data path>/ModConfig/mapstique.conf` holds the service's settings and is written
-by the service itself, and `<data path>/Logs/mapstique-service.log` is everything
+`<data path>/ModConfig/witchlight.conf` holds the service's settings and is written
+by the service itself, and `<data path>/Logs/witchlight-service.log` is everything
 the service prints while the mod is running it.
 
 Three settings in that file are read by the mod and never by the service, because
@@ -171,12 +180,12 @@ the file — the format has one owner and it is the service.
 | `icons/{name}.svg` | at asset load, or when a client sends them | the picture each marker is drawn with |
 | `world.json` | once the world is ready, and on any export until it can be | where the world counts from, so coordinates match what a player reads in game |
 | `markers.json` | **by the service**, when markers arrive and differ | the last markers posted |
-| `portraits/{uid in hex}.png` | when a client sends one | a picture of that player's seraph, drawn on their own machine |
+| `portraits/{uid in hex}.png` | on that player's every join, and 30s after their character last changed | a picture of that player's seraph, drawn on their own machine |
 | `service.json` | **by the service**, as it binds | the addresses the map answers on, the one worth giving somebody else first. Removed when the mod stops the service, so nothing hands a player the address of a map that is gone |
 
 The API socket is **not** here; it lives in `/tmp`, as above.
 
-**The format still moves.** Mapstique is alpha, so a map on disk the mod cannot
+**The format still moves.** Witchlight is alpha, so a map on disk the mod cannot
 read — an older format, or a file it cannot parse — is deleted on start and
 rebuilt as players explore. There is no upgrade path and no backup of the old
 file, deliberately: a reader for every shape the format has ever had is permanent
@@ -200,7 +209,7 @@ age.
 
 ## In the game
 
-### Network channel `mapstique`
+### Network channel `witchlight`
 
 Registered on both sides. All three messages are protobuf.
 
@@ -209,8 +218,8 @@ Registered on both sides. All three messages are protobuf.
 | `SharedMarkers` | server → client, every 15s | every marker not belonging to the recipient, added to their in-game map as temporary waypoints |
 | `IconRequest` | server → one admin's client | asks for marker pictures, carrying the names it already has |
 | `IconTable` | client → server, sliced by size | the SVGs that client's assets can supply |
-| `PortraitRequest` | server → one client | asks that player to draw themselves |
-| `PlayerPortrait` | client → server | a PNG of that player's own seraph, drawn on their machine |
+| `PortraitRequest` | server → one client, 8s after their join | asks that player to draw themselves |
+| `PlayerPortrait` | client → server, on a request and 30s after their character last changed | a PNG of that player's own seraph, drawn on their machine |
 | `PaletteRequest` | server → one admin's client | asks for a block colour palette, carrying the fingerprint it must match |
 | `PaletteTable` | client → server, in slices of 8,000 blocks | the palette that client's assets can build |
 
@@ -237,6 +246,23 @@ fallback for a poor result but the only way they ever arrive. An icon name becom
 a filename and then a URL path, and it comes from whatever mods are installed, so
 it is reduced to `[a-z0-9_-]` on the way in and checked again on the way out.
 
+A portrait travels for a third reason, which is not scarcity: what a seraph looks
+like exists only on the machine rendering it. Every player is asked eight seconds
+after joining — long enough that their client has finished arriving, since a seraph
+not yet loaded renders as a picture of nothing — and their client sends another
+thirty seconds after their character last changed. A change restarts that wait
+rather than sending, so a run of them costs one picture. A player may also ask for
+one by hand, once every five minutes — a rule their own client keeps, since the
+server cannot tell a picture somebody asked for from one their character settling
+produced. Anybody may send one:
+it decides what its own sender's card looks like and nothing else. That is a write
+open to every client, so it is bounded three ways — 512 KiB a picture, twenty-five
+seconds between two one player sends **unasked**, and nothing written at all where
+the bytes match the file already stored. The floor is `Portraits.QuietMs` less a
+margin, since one settle is the fastest an honest client sends of its own accord.
+An answer to a `PortraitRequest` is exempt: the server knows how often it asks, and
+one ask buys one picture.
+
 The palette travels because a dedicated server's own assets are nearly empty of
 block textures, which is the usual reason a map renders blank. Only an admin is
 asked — a palette decides what every block looks like and arrives from a machine
@@ -248,30 +274,41 @@ together produce a palette neither could alone.
 ### Chat commands
 
 **The prefix says which side runs it.** The game gives server commands `/` and
-client commands `.`, and they are separate registries — `/mapstique palette` asks
-the server to request a palette from an admin, while `.mapstique palette` is that
+client commands `.`, and they are separate registries — `/witchlight palette` asks
+the server to request a palette from an admin, while `.witchlight palette` is that
 admin's own client building one and sending it unprompted. The server side is the
 one to reach for; the client side exists for sending something without being
 asked.
 
-All require the `controlserver` privilege.
+**`wl` is the same tree under a shorter name**, on both sides: `/wl status` and
+`/witchlight status` are one command. It is registered as an alias only when
+nothing already answers to it — the game's `WithAlias` overwrites the command table
+without looking, so claiming two letters another mod holds would break that mod
+and say nothing. Where the name is taken, only the long one is registered and the
+log says so. Every table below gives the long name, since that is the one that is
+always there.
+
+Every server command requires the `controlserver` privilege, inherited from the
+root down the command tree. The client ones are not privileged — `.witchlight
+portrait` is a player sending their own picture, and the server drops a palette or
+a set of icons from anybody who is not an admin regardless of what asked for it.
 
 | | |
 |---|---|
-| `/mapstique export` | read every loaded chunk again, whatever the server thinks moved — the way back if the map and the world disagree |
-| `/mapstique status` | where the exports are, where the palette came from, how much terrain is stored, where the world counts from, whether the map service is up, and how many columns are waiting |
-| `/mapstique portrait [player]` | ask a player's client for a picture of their character |
-| `/mapstique service [status\|start\|stop]` | the map service the mod runs. `start` ignores `autostart`, which only decides what happens unasked |
-| `/mapstique palette [player]` | ask an admin's client for a palette now, rather than waiting for the next one to join |
-| `/mapstique icons [player]` | ask an admin's client for every marker picture again |
+| `/witchlight export` | read every loaded chunk again, whatever the server thinks moved — the way back if the map and the world disagree |
+| `/witchlight status` | where the exports are, where the palette came from, how much terrain is stored, where the world counts from, whether the map service is up, and how many columns are waiting |
+| `/witchlight portrait [player]` | ask a player's client for a picture of their character now, rather than waiting for their next join |
+| `/witchlight service [status\|start\|stop]` | the map service the mod runs. `start` ignores `autostart`, which only decides what happens unasked |
+| `/witchlight palette [player]` | ask an admin's client for a palette now, rather than waiting for the next one to join |
+| `/witchlight icons [player]` | ask an admin's client for every marker picture again |
 
 On a client, with a dot rather than a slash:
 
 | | |
 |---|---|
-| `.mapstique portrait` | draw your character and send the picture |
-| `.mapstique palette` | build a block palette and send it |
-| `.mapstique icons` | send the marker pictures |
+| `.witchlight portrait` | draw your character and send the picture. Once every five minutes; the map asks on its own besides |
+| `.witchlight palette` | build a block palette and send it |
+| `.witchlight icons` | send the marker pictures |
 
 `status` is the first thing to look at when the map looks wrong. `palette: from
 server` against `from client` says which machine's assets the colours came from,

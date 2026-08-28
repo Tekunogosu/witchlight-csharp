@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using Vintagestory.API.Common;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// Which chunk columns need their surface read again.

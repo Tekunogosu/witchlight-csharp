@@ -1,4 +1,4 @@
-# Mapstique — todo
+# Witchlight — todo
 
 Work that is known and wanted but not done. Ordered roughly by how much it bites.
 
@@ -34,7 +34,7 @@ there rather than from `Column`.
 
 ## Give the mod a configuration file
 
-The only setting it has is `MAPSTIQUE_API_SOCKET`, read from the environment,
+The only setting it has is `WITCHLIGHT_API_SOCKET`, read from the environment,
 which moves the socket but changes nothing else — the export interval,
 the seed radius and the coverage threshold are all constants. A server owner who
 wants a thirty-second export to be five minutes has to rebuild the mod.

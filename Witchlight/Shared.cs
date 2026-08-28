@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using ProtoBuf;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// One player's marker, as it travels to everyone else's client.

@@ -4,7 +4,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// Sends every player the markers belonging to everyone else, so the in-game map
@@ -15,7 +15,7 @@ namespace Mapstique;
 /// </summary>
 public static class SharedServer
 {
-    public const string Channel = "mapstique";
+    public const string Channel = "witchlight";
 
     public static SharedMarkers For(ICoreServerAPI api, IServerPlayer player)
     {

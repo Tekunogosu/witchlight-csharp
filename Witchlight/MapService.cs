@@ -7,7 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Vintagestory.API.Common;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// Posts what moves to the map service, rather than writing it to a file for the
@@ -21,7 +21,7 @@ namespace Mapstique;
 /// directory so that both sides find it without being told and two game servers
 /// on one machine do not collide. A socket is how two programs talk rather than
 /// something either keeps, so it belongs with the running system and not beside
-/// the map. Set `MAPSTIQUE_API_SOCKET` to a `host:port` or another path to move
+/// the map. Set `WITCHLIGHT_API_SOCKET` to a `host:port` or another path to move
 /// it, and set `api_socket` to the same value on the service.
 ///
 /// Nothing here blocks the game. Posts run on the thread pool and one is dropped
@@ -30,14 +30,14 @@ namespace Mapstique;
 /// </summary>
 public sealed class MapService : IDisposable
 {
-    private const string Variable = "MAPSTIQUE_API_SOCKET";
+    private const string Variable = "WITCHLIGHT_API_SOCKET";
 
     private readonly HttpClient _client;
     private readonly ILogger _log;
     private readonly string _where;
 
     /// <summary>
-    /// What happened to the last post of each kind, for `/mapstique status`.
+    /// What happened to the last post of each kind, for `/witchlight status`.
     ///
     /// Kept apart on purpose. One reading for both was worse than useless: players
     /// go every two seconds and markers every fifteen, so a succeeding player post
@@ -86,11 +86,11 @@ public sealed class MapService : IDisposable
                 },
             };
             // The host is ignored for a socket, but HttpClient insists on one.
-            _client = new HttpClient(handler) { BaseAddress = new Uri("http://mapstique") };
+            _client = new HttpClient(handler) { BaseAddress = new Uri("http://witchlight") };
         }
 
         _client.Timeout = TimeSpan.FromSeconds(5);
-        log.Notification("[mapstique] posting live data to {0}", _where);
+        log.Notification("[witchlight] posting live data to {0}", _where);
     }
 
     /// <summary>Who is online and where. Held in memory by the service.</summary>
@@ -154,7 +154,7 @@ public sealed class MapService : IDisposable
 
                     if (_complained)
                     {
-                        _log.Notification("[mapstique] the map service is taking live data again");
+                        _log.Notification("[witchlight] the map service is taking live data again");
                         _complained = false;
                     }
                 }
@@ -191,7 +191,7 @@ public sealed class MapService : IDisposable
     public static string DefaultSocket(string exports)
     {
         var full = Path.GetFullPath(exports).TrimEnd(Path.DirectorySeparatorChar);
-        return $"/tmp/mapstique-{Tag(full):x8}.sock";
+        return $"/tmp/witchlight-{Tag(full):x8}.sock";
     }
 
     /// <summary>
@@ -231,7 +231,7 @@ public sealed class MapService : IDisposable
 
         _complained = true;
         _log.Warning(
-            "[mapstique] {0}: {1} — that half will not show on the map until it is back",
+            "[witchlight] {0}: {1} — that half will not show on the map until it is back",
             isPlayers ? "players" : "markers",
             what);
     }

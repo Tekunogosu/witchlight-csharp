@@ -4,7 +4,7 @@ using Newtonsoft.Json;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>Facts about the world that do not change while it runs.</summary>
 public class WorldFacts
@@ -89,12 +89,12 @@ public class WorldFacts
             File.Move(temporary, path, overwrite: true);
 
             api.Logger.Notification(
-                "[mapstique] the map counts from spawn at {0}, {1}", spawn.Value.X, spawn.Value.Z);
+                "[witchlight] the map counts from spawn at {0}, {1}", spawn.Value.X, spawn.Value.Z);
             return true;
         }
         catch (Exception error)
         {
-            api.Logger.Warning("[mapstique] could not write world.json: {0}", error);
+            api.Logger.Warning("[witchlight] could not write world.json: {0}", error);
             return false;
         }
     }

@@ -3,7 +3,7 @@ using System.Linq;
 using System.Text;
 using Vintagestory.API.Common;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// What a palette depends on, reduced to a string.

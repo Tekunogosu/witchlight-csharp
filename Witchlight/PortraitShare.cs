@@ -1,6 +1,6 @@
 using ProtoBuf;
 
-namespace Mapstique;
+namespace Witchlight;
 
 /// <summary>
 /// A player's own likeness, on its way to the server.
