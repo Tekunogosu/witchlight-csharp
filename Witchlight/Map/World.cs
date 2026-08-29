@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Newtonsoft.Json;
+using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
 namespace Witchlight;
@@ -29,6 +30,16 @@ public class WorldFacts
     /// starting. Empty for a map written by a build older than this one.
     /// </summary>
     public string Id { get; set; } = "";
+
+    /// <summary>
+    /// The y the world's oceans sit at.
+    ///
+    /// Wanted by the renderer rather than by the page: how much of the season's
+    /// colour a block takes depends on how far above the sea it is, which is how
+    /// the game keeps a mountainside from turning autumn with the valley.
+    /// </summary>
+    public int SeaLevel { get; set; }
+
 
     /// <summary>
     /// Where the world counts from, asked in the one place that owns the answer.
@@ -130,6 +141,7 @@ public class WorldFacts
                 SpawnZ = spawn.Value.Z,
                 Name = api.WorldManager.SaveGame?.WorldName ?? "",
                 Id = api.WorldManager.SaveGame?.SavegameIdentifier ?? "",
+                SeaLevel = api.World.SeaLevel,
             };
 
             Disk.Write(

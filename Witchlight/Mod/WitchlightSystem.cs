@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -60,6 +61,18 @@ public partial class WitchlightSystem : ModSystem
 
     /// <summary>The seed still running, and the tick it runs on.</summary>
     private Seeding? _seeding;
+
+    /// <summary>
+    /// Who has already been told where the map is.
+    ///
+    /// Two events race to say it and whichever arrives first wins, so this is
+    /// what keeps a player from being told twice. Cleared when they leave, so a
+    /// rejoin is greeted again.
+    /// </summary>
+    private readonly HashSet<string> _greeted = new();
+
+    /// <summary>Whether the reason nobody is being greeted has been said.</summary>
+    private bool _saidWhyNotGreeting;
     private long _seedTick = -1;
 
     public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Server;
@@ -139,15 +152,39 @@ public partial class WitchlightSystem : ModSystem
             _palettes?.AskIfNeeded(player);
             _icons?.AskForMissing(player);
             _portraits?.AskOnceSettled(player, Doing);
+
+            // Long enough that somebody choosing a character for the first time
+            // has finished — by which point `PlayerReady` has almost certainly
+            // said it already and this finds nothing left to do.
+            api.Event.RegisterCallback(
+                _ => Doing("telling a player where the map is", () => Greet(player)),
+                GreetBackstopMs);
         });
 
         // Later than the rest of it, and for the one reason the rest does not
         // care about: this one is meant to be read. On a first join `NowPlaying`
         // lands while the character and class screen is still up, and a line of
         // chat behind it is a line nobody sees. `PlayerReady` is after that, and
-        // is immediate for anybody who has played before.
-        api.Event.PlayerReady += player => Doing("telling a player where the map is", () =>
-            SayWhereTheMapIs(player));
+        // is immediate for anybody who has played before — so it is asked first.
+        //
+        // It is not asked alone. A dedicated server has been seen to greet
+        // nobody at all, with the address readable and nothing thrown, which
+        // leaves this event not arriving as the only explanation left. Whatever
+        // the cause, a greeting nobody receives is worse than one that lands a
+        // few seconds late, so `PlayerNowPlaying` — which does arrive, and is
+        // what fetches a portrait moments later — starts a timer behind it.
+        // Whichever gets there first says it, and `Greet` sees to it that only
+        // one of them does.
+        api.Event.PlayerReady += player =>
+            Doing("telling a player where the map is", () => Greet(player));
+
+        api.Event.PlayerDisconnect += player =>
+        {
+            lock (_greeted)
+            {
+                _greeted.Remove(player.PlayerUID);
+            }
+        };
 
         // The server marks a chunk dirty for every block that moves in it and for
         // every chunk it loads, which is the whole signal an export needs. Without
@@ -202,6 +239,11 @@ public partial class WitchlightSystem : ModSystem
         // nothing by the time a disk has finished with it.
         api.Event.RegisterGameTickListener(Every("posting players", () =>
             _service?.Players(Live.PlayersJson(api, Settings.Exports))), LiveIntervalMs);
+
+        // On the same beat, and for the same reason: a clock belongs to the
+        // server that is running, not to a file beside the map.
+        api.Event.RegisterGameTickListener(Every("posting the world's clock", () =>
+            _service?.World(Live.WorldJson(api))), LiveIntervalMs);
 
         // Markers asked for on the web ride the same tick. They are rare, the ask
         // is a single request that usually comes back empty, and collecting them
@@ -299,11 +341,51 @@ public partial class WitchlightSystem : ModSystem
     /// that is not running, one somebody else runs somewhere this cannot see, and
     /// a server whose real address only its operator knows and has not said.
     /// </summary>
+    private void Greet(IServerPlayer player)
+    {
+        // Still here to read it. The backstop fires on a timer, and a player who
+        // joined and left inside it is not owed a greeting.
+        if (player.ConnectionState != EnumClientState.Playing)
+        {
+            return;
+        }
+
+        lock (_greeted)
+        {
+            if (!_greeted.Add(player.PlayerUID))
+            {
+                return;
+            }
+        }
+
+        SayWhereTheMapIs(player);
+    }
+
     private void SayWhereTheMapIs(IServerPlayer player)
     {
-        if (_sapi is not { } api || !Settings.Announces
-            || Settings.Announcement() is not { } where)
+        if (_sapi is not { } api || !Settings.Announces)
         {
+            return;
+        }
+
+        if (Settings.Announcement() is not { } where)
+        {
+            // The settings ask for a greeting and there is no address to put in
+            // one. Said, because this used to be the whole of the failure: a
+            // player joined, nothing was said, and nothing anywhere recorded
+            // that anything had been meant to happen. Once per start, since a
+            // server without an address would otherwise repeat it at every join.
+            if (!_saidWhyNotGreeting)
+            {
+                _saidWhyNotGreeting = true;
+                api.Logger.Warning(
+                    "[witchlight] joining players are being told nothing about the map: "
+                    + "`announce` is on, `announce_url` is unset, and the service has not "
+                    + "written an address to {0}. Set `announce_url` in {1} to say it anyway.",
+                    Path.Combine(Settings.Exports, "service.json"),
+                    Settings.Path);
+            }
+
             return;
         }
 
@@ -567,9 +649,35 @@ public partial class WitchlightSystem : ModSystem
     private const int SeedRadius = 8;
 
     /// <summary>
-    /// How often the surface is re-exported. Frequent enough to be useful while
-    /// testing; a large server will want this longer, which is what a config
-    /// file is for once there is one.
+    /// How long after a player starts playing to say where the map is, if the
+    /// event that is supposed to say it has not.
+    ///
+    /// Long enough for somebody picking a character and a class for the first
+    /// time to be done, since that is exactly the case the timing is about. A
+    /// player who has played before is greeted the moment they are ready and
+    /// never reaches this.
     /// </summary>
-    private const int ExportIntervalMs = 30000;
+    private const int GreetBackstopMs = 20000;
+
+    /// <summary>
+    /// How often the surface is re-exported.
+    ///
+    /// This is most of the wait between a player walking into ground nobody has
+    /// been to and seeing it drawn: everything after it — the service noticing,
+    /// the levels above being built, the page asking — adds up to about three
+    /// seconds together, against up to thirty spent here.
+    ///
+    /// Shorter costs the server almost nothing extra, because the work is per
+    /// column rather than per export and the same columns are read either way.
+    /// It is measurably kinder to the tick: an export is timed, and thirty
+    /// seconds of somebody exploring gathered 632 columns into one 380ms pass,
+    /// where the same ground taken in ten second pieces is three passes near a
+    /// hundred. A tick is 33ms, so the long pass is the one that stutters.
+    ///
+    /// What it does cost is disk. A region is rewritten whole however few of its
+    /// columns moved, so a region under somebody walking through it is written
+    /// three times where it used to be written once. That is the trade this
+    /// number makes, and the reason it is not lower still.
+    /// </summary>
+    private const int ExportIntervalMs = 10000;
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Newtonsoft.Json;
 using Vintagestory.API.Common;
 
 namespace Witchlight;
@@ -31,6 +32,7 @@ public static class ColourMaps
         Directory.CreateDirectory(directory);
         var written = 0;
         var found = 0;
+        var padding = new Dictionary<string, int>();
 
         foreach (var asset in api.Assets.GetMany("config/colormaps.json"))
         {
@@ -60,6 +62,7 @@ public static class ColourMaps
                 }
 
                 found++;
+                padding[map.Code] = map.Padding;
 
                 // Written only where it differs: the map service watches this
                 // directory, and a colour map arriving means every tinted block
@@ -70,6 +73,15 @@ public static class ColourMaps
                 }
             }
         }
+
+        // How far into each picture the usable part begins. The climate maps are
+        // a 256 square inside a 264 one, and reading the border as though it were
+        // the map puts every lookup a few pixels out — worst at the extremes,
+        // which is exactly where the hottest and coldest ground is. The number is
+        // the asset's own and cannot be told from the picture, so it travels
+        // beside it.
+        Disk.Write(
+            Path.Combine(directory, "padding.json"), JsonConvert.SerializeObject(padding));
 
         return (written, found);
     }

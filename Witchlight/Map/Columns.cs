@@ -42,15 +42,66 @@ public static class ColumnPump
     private const int MaxDrop = 8;
 
     /// <summary>
-    /// Where a chunk sits in the year, as the game reckons it. Position matters:
-    /// the hemispheres are in opposite seasons.
+    /// Where a chunk sits in the year, as the game reckons it, rounded to the
+    /// month. Position matters: the hemispheres are in opposite seasons.
+    ///
+    /// Rounded because this is what decides when the map is redrawn. The year is
+    /// stored as one byte, and taken at full precision that byte moves 255 times
+    /// a year — every one of which rewrites every region holding a column that
+    /// crossed the step, whether or not anybody has been near it. A month is the
+    /// coarsest step the eye would not notice and the one the game itself counts
+    /// in, and it takes that from 255 redraws a year to twelve.
+    ///
+    /// The byte still means what it always meant, which is why nothing stored
+    /// has to change: it is a position in the year from 0 to 255, and the map
+    /// service reads it as the coordinate to sample the season's colours at. Only
+    /// the number of distinct values it takes has changed.
     /// </summary>
     private static byte SeasonAt(ICoreServerAPI api, int chunkX, int chunkZ, int edge, BlockPos scratch)
     {
         scratch.Set(chunkX * edge + edge / 2, 0, chunkZ * edge + edge / 2);
-        var season = api.World.Calendar?.GetSeasonRel(scratch) ?? 0f;
-        return (byte)Math.Clamp((int)(season * 255f), 0, 255);
+        var calendar = api.World.Calendar;
+        var season = calendar?.GetSeasonRel(scratch) ?? 0f;
+        return InMonths(season, MonthsPerYear(calendar));
     }
+
+    /// <summary>
+    /// The middle of the month a point in the year falls in, as the stored byte.
+    ///
+    /// The middle rather than either edge, so what is drawn is the month's own
+    /// colour rather than the colour of the moment it began — the same distance
+    /// from wrong at both ends of it.
+    /// </summary>
+    private static byte InMonths(float season, int months)
+    {
+        // A year is a circle and `GetSeasonRel` may hand back the point where it
+        // closes, which belongs to the last month rather than to a thirteenth.
+        var round = Math.Clamp(season, 0f, 0.999999f);
+        var month = (int)(round * months);
+        var middle = (month + 0.5) / months;
+        return (byte)Math.Clamp((int)(middle * 255.0), 0, 255);
+    }
+
+    /// <summary>
+    /// How many months the world's calendar divides its year into.
+    ///
+    /// Asked rather than assumed: a world may be configured with a longer month,
+    /// and twelve written down here would quietly mean something else on one.
+    /// </summary>
+    private static int MonthsPerYear(IGameCalendar? calendar)
+    {
+        if (calendar is null || calendar.DaysPerMonth <= 0 || calendar.DaysPerYear <= 0)
+        {
+            return DefaultMonthsPerYear;
+        }
+
+        var months = (int)Math.Round((double)calendar.DaysPerYear / calendar.DaysPerMonth);
+        return Math.Clamp(months, 1, 255);
+    }
+
+    /// <summary>What the game's own calendar divides a year into, when it cannot
+    /// be asked.</summary>
+    private const int DefaultMonthsPerYear = 12;
 
     /// <summary>
     /// Where the year has reached for each of these columns.
@@ -77,9 +128,9 @@ public static class ColumnPump
     /// Which regions hold a column whose season has moved.
     ///
     /// The season is stored per chunk, so a year that advances a step rewrites
-    /// whatever holds those chunks whether a block moved or not. It advances about
-    /// three times an hour on the default calendar, against a tick every thirty
-    /// seconds, so it is worth asking rather than assuming.
+    /// whatever holds those chunks whether a block moved or not. A step is a
+    /// month — see `SeasonAt` — so this is a dozen redraws a year rather than one
+    /// every few minutes, and still worth asking about rather than assuming.
     /// </summary>
     public static HashSet<(int, int)> SeasonsMoved(
         IReadOnlyDictionary<(int, int), byte> before,

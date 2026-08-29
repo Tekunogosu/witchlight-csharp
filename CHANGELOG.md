@@ -8,6 +8,127 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.23.0
+
+**Deploy note:** both halves go together, as a minor always means — this posts
+the world's clock on a channel service 0.23.0 is the first to answer. No map is
+cleared. An older service refuses the post and says so in the log; nothing else
+about the map changes.
+
+**The world's clock is sent, not filed.** The date, the year, the time and the
+season now go out with the players every two seconds, on `/live/world`. They were
+in `world.json` before, which was wrong twice over: that file is written once when
+the world comes up and never again, so the page showed the moment the server
+started for as long as it ran — and a clock is the thing a map has least business
+writing to a disk, since it is stale before the write has finished.
+
+Each part is worded by the game rather than by the page, because the game holds
+the month names and the operator's language. The season is read at spawn: a season
+is a fact about a place, and the hemispheres are in opposite ones.
+
+`world.json` keeps what genuinely does not change while a world runs — where it
+counts from, what it is called, and where its sea is — and goes back to being
+written once, which is what it was built for.
+
+## 0.22.7
+
+**Deploy note:** nothing to do by hand, and nothing is cleared. Pairs with
+service 0.22.6, which needs what this adds to draw the right colours.
+
+**`world.json` says where the sea is, and what the date is.** The sea level is
+wanted by the renderer: how much of the season's colour a block takes depends on
+how far above the sea it stands, which is how the game keeps a mountainside from
+turning autumn with the valley. The date and the season are wanted by the page,
+which shows them in the corner. The season is read at spawn, because a season is
+a fact about a place and the hemispheres are in opposite ones.
+
+They ride in this file rather than on the live channel because it is already
+rewritten whenever the world's facts move and already read by the page every
+couple of seconds, and because both change slowly.
+
+**The colour maps travel with their borders.** A climate map is a 256 square
+drawn inside a 264 one; the border is for the game's texture atlas and is not
+part of the lookup. The number is the asset's own and cannot be told from the
+picture, so it is written beside them as `colormaps/padding.json` — without it
+the service read every climate lookup a few pixels out, worst at the extremes.
+
+## 0.22.6
+
+**Deploy note:** nothing to do by hand, and nothing is cleared. The first export
+after this rewrites most regions once, because almost every column's stored
+season now rounds to a different value than it did — one full redraw, and then a
+great deal fewer of them.
+
+**The map redraws for the season twelve times a year rather than 255.** Where a
+chunk sits in the year is stored as one byte, and at full precision that byte
+moved 255 times a year. Every step rewrote every region holding a column that
+crossed it — ground nobody had been near, redrawn because the year had inched
+along. One export seen on a live server rewrote 59 regions for exactly this
+reason, which is a whole map repainting while somebody was stood still.
+
+It is rounded to the month now: a dozen steps a year, each landing on a month
+boundary, holding the middle of the month it is in so what is drawn is the
+month's own colour rather than the colour of the moment it began. The number of
+months is asked of the world's calendar rather than assumed, so a world with a
+longer month steps on its own months and not on somebody else's twelve.
+
+Nothing stored changes meaning. The byte is still a position in the year from 0
+to 255 and the map service still reads it as the coordinate to sample the
+season's colours at; it simply takes twelve values now instead of 256. Old maps
+are read unchanged, and an older service reads new ones.
+
+## 0.22.5
+
+**Deploy note:** nothing to do by hand, and nothing is cleared.
+
+**Joining players are told where the map is again.** They were being told
+nothing: no address and no sign-in link. The greeting hangs off `PlayerReady`,
+which the game raises once a player has chosen a character and a class, or at
+once for anybody who has played before — the right moment, because a line of
+chat behind the character screen is a line nobody reads. On a dedicated server
+it was not arriving.
+
+Why it did not arrive is not established. What is: the address was readable at
+the time, the settings asked for the greeting, nothing was thrown — the failure
+path logs — and the handler on `PlayerNowPlaying` ran for the same player eight
+seconds later, so the mod was alive and listening. That leaves the event itself.
+
+Rather than guess at it, the greeting is now said from whichever of two events
+gets there first. `PlayerReady` still goes first, because when it works it works
+at the best possible moment. `PlayerNowPlaying`, which does arrive, now starts a
+twenty second timer behind it. A player is greeted once whichever way it lands,
+and once more if they rejoin.
+
+**And a greeting that cannot be given now says so.** The one silent failure left
+was a server with `announce` on, no `announce_url`, and no address from the
+service: every join said nothing, and nothing anywhere recorded that anything
+had been meant to happen. That is a warning in the log now, once per start,
+naming the file it wanted and the file to set instead.
+
+## 0.22.4
+
+**Deploy note:** nothing to do by hand, and nothing is cleared. The surface is
+now exported every ten seconds rather than every thirty, which writes region
+files about three times as often while somebody is exploring. A server keeping
+its map on a disk it is careful with should know that; nothing else changes.
+
+**Ground nobody has been to appears about three times sooner.** The export timer
+was most of the wait. Everything after it — the map service noticing the write,
+building the levels above, the page asking what changed — comes to around three
+seconds together, against up to thirty spent waiting for this. It is ten now.
+
+It costs the server essentially nothing extra, because the work is per column
+rather than per export: the same ground is read either way, in smaller pieces.
+Those pieces are the point. An export is timed, and thirty seconds of somebody
+exploring gathered 632 columns into a single 380ms pass on the server's own tick
+— a tick is 33ms, so that is a visible stutter. The same ground taken in ten
+second pieces is three passes of about a hundred milliseconds.
+
+What it does cost is disk. A region file is rewritten whole however few of its
+columns moved, so a region under somebody walking through it is written three
+times where it used to be written once. That is the trade, and the reason the
+number is not lower still.
+
 ## 0.22.3
 
 **Deploy note:** nothing to do by hand, and nothing is cleared. No behaviour

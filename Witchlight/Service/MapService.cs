@@ -104,10 +104,13 @@ public sealed class MapService : IDisposable
 
     private readonly Feed _players = new("players", "/live/players");
     private readonly Feed _markers = new("markers", "/live/markers");
+    private readonly Feed _world = new("world", "/live/world");
 
     public string PlayersHealth => _players.Health;
 
     public string MarkersHealth => _markers.Health;
+
+    public string WorldHealth => _world.Health;
 
     private int _collecting;
     private readonly TimeSpan _resendMarkers;
@@ -298,6 +301,9 @@ public sealed class MapService : IDisposable
 
     /// <summary>Who is online and where. Held in memory by the service.</summary>
     public void Players(string json) => Post(_players, json);
+
+    /// <summary>What the world's clock says, on its way to whoever is looking.</summary>
+    public void World(string json) => Post(_world, json);
 
     /// <summary>
     /// Every marker, when they are not what was sent last.
