@@ -44,6 +44,11 @@ public sealed class Exporter
         // whether the year has moved since.
         _seasons = Regions.Index(Regions.DirectoryIn(exports), GlobalConstants.ChunkSize);
         _dirty.Seed(_seasons.Keys);
+
+        // And what the server loaded before this existed to hear about it, which
+        // is the square of chunks around spawn. Those are held for the life of the
+        // server, so their one chance to be noticed has already gone by.
+        _dirty.MarkUnexported(LoadedColumns(api));
     }
 
     /// <summary>How many columns are waiting to be re-read.</summary>
@@ -159,40 +164,6 @@ public sealed class Exporter
             _api.Logger.Error("[witchlight] export failed: {0}", error);
             return null;
         }
-    }
-
-    /// <summary>
-    /// Loads a square of chunk columns around spawn and exports once they are
-    /// ready.
-    ///
-    /// A server with nobody on it keeps almost nothing in memory, so an export of
-    /// what happens to be loaded is a single chunk. Asking for the area around
-    /// spawn gives a fresh server a map without waiting for someone to walk the
-    /// world; everything players do explore is picked up by the timer.
-    /// </summary>
-    public void Seed(int radius)
-    {
-        if (WorldFacts.Spawn(_api) is not { } spawn)
-        {
-            _api.Logger.Warning(
-                "[witchlight] the world has no spawn point yet, so the map was not seeded — "
-                + "it will fill in as players explore");
-            return;
-        }
-
-        var size = _api.WorldManager.ChunkSize;
-        var centerX = spawn.X / size;
-        var centerZ = spawn.Z / size;
-
-        _api.Logger.Notification(
-            "[witchlight] loading {0}x{0} chunks around spawn to seed the map", radius * 2 + 1);
-
-        _api.WorldManager.LoadChunkColumnPriority(
-            centerX - radius,
-            centerZ - radius,
-            centerX + radius,
-            centerZ + radius,
-            new ChunkLoadOptions { OnLoaded = () => Export("seed") });
     }
 
     /// <summary>What the status command says about the terrain on disk.</summary>

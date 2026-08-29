@@ -78,7 +78,7 @@ public partial class WitchlightSystem
     /// </summary>
     private TextCommandResult OnLogin(TextCommandCallingArgs args)
     {
-        if (_sapi is not { } api || _service is not { } service)
+        if (_sapi is not { } api || _service is null)
         {
             return TextCommandResult.Error("The map service is not running.");
         }
@@ -94,31 +94,17 @@ public partial class WitchlightSystem
                 "The map has no address to hand out. Set `announce_url` in witchlight.conf.");
         }
 
-        var uid = player.PlayerUID;
-        var name = player.PlayerName ?? "";
-
-        // Off the game thread, because it is a round trip to another program, and
-        // back onto it to speak: everything the server says, it says from there.
-        _ = Task.Run(async () =>
-        {
-            var link = await service.Link(uid, name, where).ConfigureAwait(false);
-            api.Event.EnqueueMainThreadTask(() =>
-            {
-                if (api.World.PlayerByUid(uid) is not IServerPlayer told)
-                {
-                    return;
-                }
-
-                api.SendMessage(
-                    told,
-                    GlobalConstants.GeneralChatGroup,
-                    link is null
-                        ? "The map could not be asked for a link. Is the service running?"
-                        : $"Your map: <a href=\"{link}\">open it</a> — the link is good for ten "
-                          + "minutes and works once.",
-                    EnumChatType.Notification);
-            }, "witchlight-login");
-        });
+        // The same round trip the greeting on join makes, so the two cannot come
+        // to disagree about what a link is or how one is asked for. What is said
+        // about it differs, and only that.
+        WithLoginLink(player, where, (told, link) => api.SendMessage(
+            told,
+            GlobalConstants.GeneralChatGroup,
+            link is null
+                ? "The map could not be asked for a link. Is the service running?"
+                : $"Your map: <a href=\"{link}\">open it</a> — the link is good for ten "
+                  + "minutes and works once.",
+            EnumChatType.Notification));
 
         return TextCommandResult.Success("Asking the map for a link…");
     }
@@ -147,10 +133,13 @@ public partial class WitchlightSystem
             return TextCommandResult.Error("server not ready");
         }
 
-        var lines = new List<string>
+        var lines = new List<string?>
         {
             $"version: {Mod.Info.Version}",
             $"exports: {Settings.Exports}",
+            Settings.PerWorld
+                ? $"filed: a directory per world, inside {Settings.MapData}"
+                : "filed: one map for this data path (per_world is off)",
             _palettes?.Describe() ?? "palette: not built yet",
             // The one line that would have shown the map counting from the wrong
             // place: both halves have to be right, and neither is visible in game.
@@ -168,9 +157,13 @@ public partial class WitchlightSystem
             $"players out: {_service?.PlayersHealth ?? "not started"}",
             $"markers out: {_service?.MarkersHealth ?? "not started"}",
             $"waiting: {_exporter?.Waiting ?? 0} columns changed since then",
+            // Only while one is running. A seed is a state a server passes through
+            // rather than one it sits in, and a line saying it is not seeding is a
+            // line every reader has to skip for the rest of the world's life.
+            _seeding?.Describe(),
         };
 
-        return TextCommandResult.Success(string.Join("\n", lines));
+        return TextCommandResult.Success(string.Join("\n", lines.Where(line => line is not null)));
     }
 
     /// <summary>
@@ -190,7 +183,7 @@ public partial class WitchlightSystem
 
         if (_serviceProcess is null && action != "status")
         {
-            _serviceProcess = ServiceProcess.Prepare(api, Mod, Settings.Exports);
+            _serviceProcess = ServiceProcess.Prepare(api, Mod);
         }
 
         if (_serviceProcess is not { } service)

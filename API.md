@@ -371,7 +371,7 @@ tile at the finest zoom level, and the same square the game itself calls a map
 region. Region file, tile and game region are one thing, which is a whole class of
 off-by-one that cannot happen. Each is a gzip stream of fixed-size records after a
 20-byte header, documented in the service's `src/columns.rs` and in the mod's
-`Regions.cs`. On real exports the compression runs between five and eight times.
+`Map/Regions.cs`. On real exports the compression runs between five and eight times.
 
 The service watches the `columns` directory's timestamp and reloads only the
 regions whose own timestamps moved, and watches `palette.json` and

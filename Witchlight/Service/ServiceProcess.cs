@@ -27,7 +27,6 @@ public sealed class ServiceProcess : IDisposable
     private readonly ICoreServerAPI _api;
     private readonly string _executable;
     private readonly string _config;
-    private readonly string _exports;
 
     private Process? _process;
     private StreamWriter? _log;
@@ -36,12 +35,11 @@ public sealed class ServiceProcess : IDisposable
     /// <summary>Whether the stop about to happen is one we asked for.</summary>
     private bool _stopping;
 
-    private ServiceProcess(ICoreServerAPI api, string executable, string config, string exports)
+    private ServiceProcess(ICoreServerAPI api, string executable, string config)
     {
         _api = api;
         _executable = executable;
         _config = config;
-        _exports = exports;
     }
 
     /// <summary>Everything the service says, on its own so it can be tailed.</summary>
@@ -55,7 +53,7 @@ public sealed class ServiceProcess : IDisposable
     /// without starting anything. Null when this machine has no service to run,
     /// which is said out loud rather than left to be noticed.
     /// </summary>
-    public static ServiceProcess? Prepare(ICoreServerAPI api, Mod mod, string exports)
+    public static ServiceProcess? Prepare(ICoreServerAPI api, Mod mod)
     {
         if (BundledService.Unpack(api, mod) is not { } executable)
         {
@@ -63,7 +61,7 @@ public sealed class ServiceProcess : IDisposable
         }
 
         var config = Settings.EnsureWritten(api, executable);
-        return config is null ? null : new ServiceProcess(api, executable, config, exports);
+        return config is null ? null : new ServiceProcess(api, executable, config);
     }
 
     /// <summary>Whether the settings ask for this to run itself.</summary>
@@ -94,6 +92,11 @@ public sealed class ServiceProcess : IDisposable
             };
             started.ArgumentList.Add("--config");
             started.ArgumentList.Add(_config);
+            // Named outright rather than left to be worked out. Where each world
+            // keeps its own map there are several to choose between, and only
+            // this half knows which world is running.
+            started.ArgumentList.Add("--exports");
+            started.ArgumentList.Add(Settings.Exports);
             started.ArgumentList.Add("serve");
 
             // What a previous run said about where it was listening. Cleared
@@ -229,8 +232,8 @@ public sealed class ServiceProcess : IDisposable
     {
         foreach (var path in new[]
                  {
-                     Path.Combine(_exports, "service.json"),
-                     MapService.ConnectionPath(_exports),
+                     Path.Combine(Settings.Exports, "service.json"),
+                     MapService.ConnectionPath(Settings.Exports),
                  })
         {
             try

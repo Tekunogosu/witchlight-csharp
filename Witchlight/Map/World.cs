@@ -24,6 +24,13 @@ public class WorldFacts
     public string Name { get; set; } = "";
 
     /// <summary>
+    /// Which savegame this is, so that a map found on its own can be matched to
+    /// the world that wrote it rather than to the world that happens to be
+    /// starting. Empty for a map written by a build older than this one.
+    /// </summary>
+    public string Id { get; set; } = "";
+
+    /// <summary>
     /// Where the world counts from, asked in the one place that owns the answer.
     ///
     /// There are two spawn points and they answer different questions. The world
@@ -48,6 +55,28 @@ public class WorldFacts
         {
             // Asked before the world has one. Not knowing yet is a state, and
             // every caller here is written to expect it.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Which world a map on disk was written for, or nothing where it does not
+    /// say. The one thing that can tell a map found loose in a folder apart from
+    /// the world that is starting now.
+    /// </summary>
+    public static string? NameIn(string exports)
+    {
+        try
+        {
+            var path = Path.Combine(exports, "world.json");
+            return File.Exists(path)
+                ? JsonConvert.DeserializeObject<WorldFacts>(File.ReadAllText(path))?.Name
+                : null;
+        }
+        catch (Exception)
+        {
+            // A map whose facts cannot be read is a map nothing can be claimed
+            // about, which is the same answer as one that does not say.
             return null;
         }
     }
@@ -100,6 +129,7 @@ public class WorldFacts
                 SpawnY = spawn.Value.Y,
                 SpawnZ = spawn.Value.Z,
                 Name = api.WorldManager.SaveGame?.WorldName ?? "",
+                Id = api.WorldManager.SaveGame?.SavegameIdentifier ?? "",
             };
 
             Disk.Write(

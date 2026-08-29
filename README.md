@@ -41,11 +41,20 @@ worthless by the time a disk has finished with it.
 | a picture of a player's seraph | `portraits/{uid in hex}.png` | on their every join, and 30s after their character last changed |
 | where the world counts from | `world.json` | at start |
 
-The files land in `<data path>/witchlight`. The service listens for posts on its
+The files land in `<data path>/witchlight`, or wherever `map_data` names. With
+`per_world` on they land in a directory named for the world inside it — the world's
+own name and eight characters of its savegame identifier, because two saves called
+"New World" are not rare and one directory between them is one map of two worlds.
+It is off for a dedicated server, which runs one world, and on for singleplayer,
+where every save shares one data path. Turning it on moves the map already there
+down into its own directory rather than leaving it to be written over.
+
+The service listens for posts on its
 API channel — loopback, on a port it writes into `api.json` in that same directory
-so both sides find each other without being told. See [API.md](API.md). Ten seconds after start it loads a 17×17
-block of chunk columns around spawn and exports those, so a fresh server has a map
-without waiting for anyone to walk the world.
+so both sides find each other without being told. See [API.md](API.md). Once the
+world is up it loads a 17×17 block of chunk columns around spawn, four columns at a
+time and working outward in rings, so a fresh server has a map without waiting for
+anyone to walk the world and without holding up the chunk thread while it does.
 
 Exports **accumulate**. A server holds only the chunks players are near, so an
 export that replaced the file would shrink the map back to spawn every time it
@@ -115,7 +124,17 @@ that line and the message below get it from.
 
 ### Telling players where it is
 
-A player is told where the map is as they join, which two settings govern:
+A player is told where the map is once they are in the world, and handed a link
+that opens it already signed in — so nobody has to know to type
+`/witchlight login`. Both are pressable in chat. The plain address is the one to
+bookmark; the signed-in link is spent on one press and expires in ten minutes,
+which is the same link the command hands out and is offered to whoever could have
+typed it.
+
+Said at `PlayerReady` rather than on join: on a first join the character and class
+screen is still up, and a line of chat behind it is a line nobody sees.
+
+Two settings govern it:
 
 ```toml
 announce = true          # say it at all
@@ -130,6 +149,10 @@ that one:
 ```toml
 announce_url = "https://map.example.com"
 ```
+
+An `announce_url` without a scheme is said as words rather than as a link: the
+game makes a link out of an address beginning `http`, and one it does not
+recognise is a press that goes nowhere.
 
 Both are read at each join, so turning the message off takes effect on the next
 one rather than on the next restart. Nothing is said when there is no address to
@@ -356,30 +379,36 @@ startup, so deploying means restarting.
 
 ## How it is laid out
 
-One subject to a file, and a utility never sits inside the system that first
-needed it. Two mod systems start, one per side, and neither of them decides
-anything — every judgement is in a type of its own that they wire together.
+One subject to a file, one subject to a folder, and a utility never sits inside
+the system that first needed it. Two mod systems start, one per side, and neither
+of them decides anything — every judgement is in a type of its own that they wire
+together.
 
 | | |
 |---|---|
-| `WitchlightSystem.cs` `ServerCommands.cs` | the server side: what runs, when, and what an operator can type |
-| `WitchlightClient.cs` `ClientPortrait.cs` `ClientSupplies.cs` | the client side: what it draws and what it is asked for |
-| `Exporter.cs` `Columns.cs` `Regions.cs` `Dirty.cs` | reading the surface and writing it |
-| `PaletteExchange.cs` `IconExchange.cs` `PortraitExchange.cs` | the three things only a client can supply |
-| `PaletteBuilder.cs` `Palette.cs` `BlockShapes.cs` `ColourMaps.cs` `BlockNames.cs` | what a block looks like |
-| `MapService.cs` `ServiceProcess.cs` `BundledService.cs` `Settings.cs` | the other half: talking to it, running it, and what the operator set |
-| `Live.cs` `Markers.cs` `Visibility.cs` `Pending.cs` `SharedServer.cs` `SharedMarkerLayer.cs` | markers, and who may see them |
-| `Shared.cs` `PaletteShare.cs` `IconShare.cs` `PortraitShare.cs` | what travels between the two sides, and how it is sliced to fit |
-| `PortraitCapture.cs` `PortraitWatch.cs` | drawing a player, which only their own machine can do |
-| `Disk.cs` `TextureColours.cs` `Faults.cs` `Fingerprint.cs` `Icons.cs` `Portraits.cs` `World.cs` `Commands.cs` | utilities, which know nothing about this mod's lifecycle |
+| `Mod/` | the two mod systems and the commands: what runs on each side, when, and what an operator can type |
+| `Map/` | reading the surface, writing it, and settling where a world's map belongs |
+| `Palette/` | what a block looks like, and asking a client for the assets a dedicated server does not ship |
+| `Markers/` | markers, who may see them, and what one player is shown of another's |
+| `Portraits/` | drawing a player, which only their own machine can do |
+| `Icons/` | the marker icons, which arrive the same way a palette does |
+| `Network/` | what travels between the two sides, and how it is sliced to fit |
+| `Service/` | the other half: talking to it, running it, and what the operator set |
+| `Util/` | writing, failing, and identity — none of which know this mod's lifecycle |
 
-Two of those are worth knowing before changing anything. **`Disk.cs` owns every
+Three of those folders each hold their own `*Exchange.cs`, because the three
+things only a client can supply — a palette, the icons, a portrait — are each a
+question about that subject rather than a question about the network. What
+crosses the wire is `Network/`; who asks for it and what is done with the answer
+stays with the subject.
+
+Two files are worth knowing before changing anything. **`Util/Disk.cs` owns every
 write**: a file is written only when it would differ, and always through a
 temporary renamed into place, because the map service reads all of it while the
-server runs. **`Settings.cs` owns every question about what the operator wants**,
-including what a marker nobody has decided about is — three places used to
-negate that setting separately, which is three chances to show somebody's markers
-to a server.
+server runs. **`Service/Settings.cs` owns every question about what the operator
+wants**, including what a marker nobody has decided about is — three places used
+to negate that setting separately, which is three chances to show somebody's
+markers to a server.
 
 ## Known gaps
 

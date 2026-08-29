@@ -8,6 +8,161 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.22.3
+
+**Deploy note:** nothing to do by hand, and nothing is cleared. No behaviour
+changed — this release only moves files.
+
+**The source is in folders.** Forty-three files sat in one directory, which is a
+list you read rather than a shape you understand. They are now grouped by subject:
+`Mod/`, `Map/`, `Palette/`, `Markers/`, `Portraits/`, `Icons/`, `Network/`,
+`Service/`, `Util/`. Nothing was renamed except `Shared.cs`, which held the marker
+wire types and is now `Network/MarkerShare.cs` beside its three siblings. No type,
+namespace, or line of logic changed, and the project file needed no edit.
+
+The three `*Exchange.cs` drivers went to their subjects rather than to `Network/`.
+`Network/` is what crosses the wire; who asks for it and what is done with the
+answer belongs with the palette, the icons, or the portrait.
+
+## 0.22.2
+
+**Deploy note:** nothing to do by hand, and nothing is cleared.
+
+**A joining player is signed in without having to know a command.** The greeting
+now carries a link that opens the map as them, which is the same link
+`/witchlight login` hands out — good for one press, for ten minutes. Nobody has to
+be told to type anything. It is offered to whoever could have typed the command
+and only where there is a service to mint one; a link that could not be minted is
+passed over in silence, since somebody who merely joined a server never asked.
+
+The greeting also moved to `PlayerReady` from the join event. On a first join the
+character and class screen is still up when a player starts playing, and a line of
+chat behind it is a line nobody reads.
+
+**The address is a link.** It was plain text somebody had to retype into a
+browser. Both it and the signed-in link are pressable now — except an
+`announce_url` with no scheme, which is said as words: the game makes a link only
+out of an address beginning `http`, and a press that goes nowhere is worse than
+text that can be copied.
+
+The command and the greeting now ask for a link through one function rather than
+two copies of the round trip, so what a link is and how one is asked for cannot
+drift between them. Only what is said about it differs.
+
+## 0.22.1
+
+**Deploy note:** nothing to do by hand, and nothing is cleared. The square at
+spawn fills in on the next start.
+
+**The chunks around spawn were never on the map.** A 7x7 square of them, centred
+exactly on spawn, black on a map that was correct in every direction around it —
+and no amount of walking through it made any difference.
+
+The server loads that square while it is starting, and it does so before the mod
+has a directory to write into, so the one ChunkDirty each of those columns raises
+arrives with nothing listening. The server then holds them for as long as it runs,
+so none of them ever raises another. Seeding did not help either: a request for a
+column already in memory is answered from memory and queues nothing, so it asked
+for all 289 columns around spawn and the 49 that most needed reading were the ones
+it skipped.
+
+The export now notes what is already in memory at the moment it starts watching,
+for anything not already on disk — a column in memory that has never been read is
+a column to read. A chunk merely coming back into memory is still not a change, so
+a player walking a circuit still re-reads nothing.
+
+This was not new. It has been true since the export was written, and a dedicated
+server hides it: any block placed near spawn dirties those columns and fills the
+hole in. A world whose map starts empty has nothing to hide it, which is what
+giving each world its own directory did.
+
+## 0.22.0
+
+**Deploy note:** deploy both halves together. The settings file gains `map_data`
+and `per_world`, and a 0.21 map service refuses a file naming settings it has never
+heard of — this one reads a 0.21 file perfectly well, so the order that fails is an
+old service against new settings. **Nothing changes for a dedicated server:**
+`per_world` is off there, the map stays exactly where it is, and no map is cleared.
+In singleplayer it is on, and the first start after upgrading **moves** the map
+already in `<data path>/witchlight` down into a directory of its own rather than
+leaving it to be written over. A settings file written before this release says
+nothing about `per_world`, and that silence reads as the answer for the side asking
+rather than as "off".
+
+**Each world keeps its own map.** A dedicated server runs one world out of one data
+path, so its map has always sat in one folder. A client runs every save it has out
+of the same data path, and one folder for all of them meant the second world wrote
+its terrain into the first world's map at the same region coordinates — a map of
+two worlds at once, with nothing anywhere saying so.
+
+The directory is named for the world: its own name, so a listing reads as a list of
+worlds, and eight characters of its savegame identifier, because two saves called
+"New World" are not rare and one directory between them is the whole failure this
+prevents. A world made by a build too old to carry an identifier is filed under its
+name and seed instead, which are as fixed as it is.
+
+Nothing is shared between them, including what happens to be identical. A palette
+written once and then left alone costs nothing to keep; one rewritten on every
+switch between a world with no mods and a world with fifty costs a disk.
+
+**A map found loose in the folder is moved, never written over.** Turning the
+setting on moves what is already there down into a directory before anything else
+runs — this world's, where `world.json` says the map is this world's, and one named
+after whoever it does belong to otherwise. A folder that already holds this world's
+directory is left alone and said so, since a move onto it would be the merge this
+exists to prevent.
+
+**`map_data` says where maps are kept**, for a larger disk or a directory a web
+server already serves. Empty is `<data path>/witchlight`, which is where it has
+always been.
+
+**The palette is written when the world is up rather than when the assets load.**
+It is still *built* at asset load, because the server frees block textures straight
+afterwards and there is no second chance — but which directory it belongs in is not
+known until the world can be asked its name. The colour maps, the marker pictures
+and the block names come out of assets the server keeps, so they moved with it; the
+only reason they were up there was that the palette had to be.
+
+`world.json` now carries the savegame identifier as well as the world's name, so a
+map can be matched to the world that wrote it rather than to the world that
+happens to be starting. `/witchlight status` says which layout is in use.
+
+## 0.21.1
+
+**Deploy note:** nothing to do by hand. No format change and no map is cleared.
+
+**Seeding a fresh map took the server down in singleplayer.** The map is filled in
+around spawn at startup so that a server nobody has walked yet still has a map,
+and it asked for that whole square in one call. `LoadChunkColumnPriority` is
+documented as asynchronous for a rectangle and is not: the server queues the
+rectangle and its chunk thread drains it with a blocking area load, holding that
+thread until every column is generated or twelve seconds have gone.
+
+On a dedicated server that is nobody's problem — the seed runs at startup with
+the queue empty. In singleplayer the player joins in the same tick, with the
+view distance the game raises to 1152 blocks because it is singleplayer, and the
+thousands of columns they ask for pile up behind the seed. The request queue
+holds two thousand. Once past that the server clears the queue out from under its
+own chunk thread and dies with `In queue but missed from index!`, nine seconds
+into the world.
+
+The seed now asks for four columns every quarter second, which is four short
+loads with the thread free between them rather than one nine-second hold. It also
+works outward from spawn in rings rather than in rows, so a map filling in grows
+from the middle and one cut short by a shutdown is still centred; and it writes
+the map as it goes, because a column nobody is standing near is freed again after
+fifteen seconds and a single export at the end would find the earliest ones gone.
+
+Columns already in memory cost nothing — the server answers those without
+queueing anything at all, which in singleplayer is most of them, since the
+player's own view distance covers this square several times over.
+
+**The seed could also silently never run.** It hung off a ten-second timer
+started when the mod started, while the exporter it writes through is not built
+until the world is ready. Whichever arrived first decided whether a fresh server
+got a map, and nothing said which had happened. It now starts where the exporter
+is built. `/witchlight status` says how far a running seed has got.
+
 ## 0.21.0
 
 **Deploy note:** nothing to do by hand. The map format has not changed and no map

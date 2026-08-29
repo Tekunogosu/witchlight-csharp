@@ -25,12 +25,63 @@ public static class Settings
     public static string Path => System.IO.Path.Combine(GamePaths.ModConfig, "witchlight.conf");
 
     /// <summary>
-    /// Where every export lands, next to the world data.
+    /// Where map data is kept, before any per-world directory inside it.
+    ///
+    /// The `witchlight` folder beside the world data unless the settings name
+    /// somewhere else — a larger disk, a directory a web server already serves.
+    /// </summary>
+    public static string MapData
+    {
+        get
+        {
+            var told = Value("map_data");
+            return string.IsNullOrWhiteSpace(told)
+                ? System.IO.Path.Combine(GamePaths.DataPath, ExportDirName)
+                : told.Trim();
+        }
+    }
+
+    /// <summary>
+    /// Whether each world's map goes in a directory of its own.
+    ///
+    /// Settled with the rest of it once the world is up, because what an absent
+    /// setting means depends on which side is asking.
+    /// </summary>
+    public static bool PerWorld { get; private set; }
+
+    /// <summary>
+    /// Where every export lands.
     ///
     /// The one directory both halves agree on, so it is named once here rather
-    /// than rebuilt from `GamePaths` wherever somebody needs it.
+    /// than rebuilt from `GamePaths` wherever somebody needs it. Which world's
+    /// map it is is not known until the world is up, so this is the folder they
+    /// all sit in until <see cref="ForWorld"/> has been told.
     /// </summary>
-    public static string Exports => System.IO.Path.Combine(GamePaths.DataPath, ExportDirName);
+    public static string Exports => _exports ?? MapData;
+
+    /// <summary>Which world's map this is, once a world has said.</summary>
+    private static string? _exports;
+
+    /// <summary>
+    /// Settles which directory this world's map goes in.
+    ///
+    /// Called once the world is up, because until then there is no world to name
+    /// one after. Everything written before that point — the palette, the block
+    /// names, the icons — has to wait for it, which is why they are exported here
+    /// rather than when the assets finish loading.
+    /// </summary>
+    public static void ForWorld(ICoreServerAPI api)
+    {
+        // An absent setting means the answer for this side rather than a fixed
+        // one. A dedicated server runs one world out of one data path and its map
+        // has always been where it is; every singleplayer save shares one data
+        // path and would otherwise write into the last world's map. A settings
+        // file written before this setting existed says nothing, and reading that
+        // silence as "off" would leave singleplayer with the fault this fixes.
+        PerWorld = On("per_world", byDefault: !api.Server.IsDedicated);
+        _exports = MapDirectory.Settle(api, MapData, PerWorld);
+        Directory.CreateDirectory(_exports);
+    }
 
     private const string ExportDirName = "witchlight";
 
@@ -143,6 +194,11 @@ public static class Settings
             write.ArgumentList.Add(Path);
             write.ArgumentList.Add("--vs-data");
             write.ArgumentList.Add(GamePaths.DataPath);
+            // The default for wherever this file is being created, because the
+            // service cannot tell singleplayer from a dedicated server and this
+            // half can. Written once; after that it is the operator's to change.
+            write.ArgumentList.Add("--per-world");
+            write.ArgumentList.Add(api.Server.IsDedicated ? "false" : "true");
             write.ArgumentList.Add("--save-config");
             write.ArgumentList.Add("--print-config");
 

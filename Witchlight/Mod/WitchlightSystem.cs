@@ -43,6 +43,11 @@ public partial class WitchlightSystem : ModSystem
     /// <summary>What the palette build at asset load settled on, for the asking
     /// half that cannot exist until the server is up.</summary>
     private PaletteExchange.Built? _built;
+
+    /// <summary>The palette as the assets gave it, before there was anywhere to
+    /// put it. Read while block textures are still in memory; written once the
+    /// world has said which directory its map is in.</summary>
+    private PaletteExchange.Raw? _raw;
     private PaletteExchange? _palettes;
     private IconExchange? _icons;
     private PortraitExchange? _portraits;
@@ -53,6 +58,10 @@ public partial class WitchlightSystem : ModSystem
     /// <summary>The map service, when this server is the one running it.</summary>
     private ServiceProcess? _serviceProcess;
 
+    /// <summary>The seed still running, and the tick it runs on.</summary>
+    private Seeding? _seeding;
+    private long _seedTick = -1;
+
     public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Server;
 
     /// <summary>Runs before the server frees texture data, which is the only window.</summary>
@@ -62,6 +71,34 @@ public partial class WitchlightSystem : ModSystem
     {
         _sapi = api;
         _faults = new Faults(api.Logger);
+
+        Listen(api);
+        Schedule(api);
+        RegisterCommands(api);
+
+        // Version first, and on every start: the quickest way to tell a deployed
+        // mod from the one you meant to deploy. The map service prints its own for
+        // the same reason, and the two must match on minor version.
+        api.Logger.Notification(
+            "[witchlight] {0} ready, exporting every {1}s", Mod.Info.Version, ExportIntervalMs / 1000);
+    }
+
+    /// <summary>
+    /// Everything that has to know which world this is.
+    ///
+    /// The map may be filed per world, and which directory that is cannot be
+    /// worked out until the world is up and can be asked its name. So nothing
+    /// that writes into the export directory is built or run before this — the
+    /// palette is built while the assets are still in memory, because that is
+    /// the only window there is for it, and written here with everything else.
+    /// </summary>
+    private void OpenTheMap(ICoreServerAPI api)
+    {
+        Settings.ForWorld(api);
+        api.Logger.Notification("[witchlight] this world's map is in {0}", Settings.Exports);
+
+        ClearWhatThisBuildCannotRead(api);
+
         _icons = new IconExchange(api, Settings.Exports);
         if (_built is { } built)
         {
@@ -70,19 +107,7 @@ public partial class WitchlightSystem : ModSystem
         _portraits = new PortraitExchange(api, Settings.Exports);
         _service = new MapService(Settings.Exports, api.Logger);
 
-        Listen(api);
-        ClearWhatThisBuildCannotRead(api);
-        Schedule(api);
-        RegisterCommands(api);
-
-        // Version first, and on every start: the quickest way to tell a deployed
-        // mod from the one you meant to deploy. The map service prints its own for
-        // the same reason, and the two must match on minor version.
-        api.Logger.Notification(
-            "[witchlight] {0} ready, exporting every {1}s to {2}",
-            Mod.Info.Version,
-            ExportIntervalMs / 1000,
-            Settings.Exports);
+        WriteWhatTheAssetsSaid(api);
     }
 
     /// <summary>Running one piece of work, and never letting it out.</summary>
@@ -114,8 +139,15 @@ public partial class WitchlightSystem : ModSystem
             _palettes?.AskIfNeeded(player);
             _icons?.AskForMissing(player);
             _portraits?.AskOnceSettled(player, Doing);
-            SayWhereTheMapIs(player);
         });
+
+        // Later than the rest of it, and for the one reason the rest does not
+        // care about: this one is meant to be read. On a first join `NowPlaying`
+        // lands while the character and class screen is still up, and a line of
+        // chat behind it is a line nobody sees. `PlayerReady` is after that, and
+        // is immediate for anybody who has played before.
+        api.Event.PlayerReady += player => Doing("telling a player where the map is", () =>
+            SayWhereTheMapIs(player));
 
         // The server marks a chunk dirty for every block that moves in it and for
         // every chunk it loads, which is the whole signal an export needs. Without
@@ -135,10 +167,16 @@ public partial class WitchlightSystem : ModSystem
         // either side looking wrong.
         api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, () => Doing("starting up", () =>
         {
+            // Unpacked and asked for its settings first: they are what decides
+            // which directory the map goes in, and the service is the half that
+            // writes them on a first run.
+            _serviceProcess = ServiceProcess.Prepare(api, Mod);
+            OpenTheMap(api);
             _exporter = new Exporter(api, Settings.Exports);
             _exporter.KeepWorldFacts();
             _visibility = Visibility.Read(api);
             StartService();
+            BeginSeeding(api);
         }));
     }
 
@@ -171,9 +209,47 @@ public partial class WitchlightSystem : ModSystem
         // seconds to find out whether it worked.
         api.Event.RegisterGameTickListener(
             Every("collecting markers", CollectMarkers), LiveIntervalMs);
+    }
 
-        api.Event.RegisterCallback(
-            _ => Doing("seeding the map", () => _exporter?.Seed(SeedRadius)), SeedDelayMs);
+    /// <summary>
+    /// Starts filling a fresh map, a few columns at a time.
+    ///
+    /// Started where the exporter is made rather than on a clock of its own: a
+    /// seed has nowhere to write until the exporter exists, and a timer that beat
+    /// it there did nothing at all and said nothing about it.
+    ///
+    /// The stepping is a tick because the asking has to be spread out — see
+    /// <see cref="Seeding"/> for what happens to a server handed the whole square
+    /// at once.
+    /// </summary>
+    private void BeginSeeding(ICoreServerAPI api)
+    {
+        _seeding = Seeding.Around(api, SeedRadius, reason => Export(reason));
+        if (_seeding is null)
+        {
+            return;
+        }
+
+        _seedTick = api.Event.RegisterGameTickListener(
+            Every("seeding the map", () =>
+            {
+                if (_seeding is null || !_seeding.Step())
+                {
+                    StopSeeding(api);
+                }
+            }),
+            Seeding.StepIntervalMs);
+    }
+
+    /// <summary>Takes the seed's tick back once there is nothing left to ask for.</summary>
+    private void StopSeeding(ICoreServerAPI api)
+    {
+        if (_seedTick >= 0)
+        {
+            api.Event.UnregisterGameTickListener(_seedTick);
+            _seedTick = -1;
+        }
+        _seeding = null;
     }
 
     /// <summary>One piece of work, shaped to be handed to a tick listener.</summary>
@@ -225,13 +301,87 @@ public partial class WitchlightSystem : ModSystem
     /// </summary>
     private void SayWhereTheMapIs(IServerPlayer player)
     {
-        if (_sapi is null || !Settings.Announces || Settings.Announcement() is not { } where)
+        if (_sapi is not { } api || !Settings.Announces
+            || Settings.Announcement() is not { } where)
         {
             return;
         }
 
-        _sapi.SendMessage(
-            player, GlobalConstants.GeneralChatGroup, $"The map is at {where}", EnumChatType.Notification);
+        // The address on its own is what somebody bookmarks, so it is said either
+        // way and said as itself. The link beside it is spent on one press.
+        var address = $"The map is at {AsLink(where, where)}";
+
+        // Signing them in is the same thing `/witchlight login` does, so it is
+        // offered to exactly whoever could have typed that — and only where there
+        // is a service to mint one.
+        if (_service is null || !player.HasPrivilege(Privilege.chat))
+        {
+            api.SendMessage(player, GlobalConstants.GeneralChatGroup, address,
+                EnumChatType.Notification);
+            return;
+        }
+
+        WithLoginLink(player, where, (told, link) => api.SendMessage(
+            told,
+            GlobalConstants.GeneralChatGroup,
+            // Nothing is said about a link that could not be minted. Somebody who
+            // typed the command is owed the reason; somebody who merely joined a
+            // server never asked, and the address still works.
+            link is null
+                ? address
+                : $"{address}. {AsLink(link, "Open it signed in")} — that link works "
+                  + "once, for ten minutes.",
+            EnumChatType.Notification));
+    }
+
+    /// <summary>
+    /// An address as chat should show it: something to press where it is, and
+    /// plain words where it is not.
+    ///
+    /// The game makes a link out of `href` only for an address with a scheme it
+    /// knows — it splits on `://` and opens what begins with `http`. An
+    /// `announce_url` set to a bare host is a perfectly good thing to tell
+    /// somebody and a link that would do nothing at all when pressed, and text
+    /// that can be copied beats a press that goes nowhere.
+    /// </summary>
+    private static string AsLink(string where, string said) =>
+        where.StartsWith("http", StringComparison.Ordinal) && where.Contains("://")
+            ? $"<a href=\"{where}\">{said}</a>"
+            : said;
+
+    /// <summary>
+    /// Asks the map for a link that signs one player in, and hands it back on the
+    /// game thread.
+    ///
+    /// A round trip to another program, so the asking happens off the game
+    /// thread; everything the server says it says from that thread, so the answer
+    /// comes back to it. Null where the map could not be asked, which the two
+    /// callers answer differently.
+    ///
+    /// The player is looked up again rather than held across the wait: minting
+    /// takes a moment and somebody can leave inside it.
+    /// </summary>
+    private void WithLoginLink(IServerPlayer player, string where, Action<IServerPlayer, string?> told)
+    {
+        if (_sapi is not { } api || _service is not { } service)
+        {
+            return;
+        }
+
+        var uid = player.PlayerUID;
+        var name = player.PlayerName ?? "";
+
+        _ = Task.Run(async () =>
+        {
+            var link = await service.Link(uid, name, where).ConfigureAwait(false);
+            api.Event.EnqueueMainThreadTask(() =>
+            {
+                if (api.World.PlayerByUid(uid) is IServerPlayer still)
+                {
+                    Doing("handing over a map link", () => told(still, link));
+                }
+            }, "witchlight-login");
+        });
     }
 
     /// <summary>
@@ -242,13 +392,7 @@ public partial class WitchlightSystem : ModSystem
     /// </summary>
     private void StartService()
     {
-        if (_sapi is null || _serviceProcess is not null)
-        {
-            return;
-        }
-
-        _serviceProcess = ServiceProcess.Prepare(_sapi, Mod, Settings.Exports);
-        if (_serviceProcess is null)
+        if (_sapi is null || _serviceProcess is null || _serviceProcess.Running)
         {
             return;
         }
@@ -340,8 +484,29 @@ public partial class WitchlightSystem : ModSystem
     public override void AssetsFinalize(ICoreAPI api)
     {
         Report(api, "AssetsFinalize");
+        _raw = PaletteExchange.BuildFromAssets(api);
+    }
 
-        _built = PaletteExchange.Bootstrap(api, Settings.Exports);
+    /// <summary>
+    /// Writes everything the assets said, once there is a directory to write it
+    /// to.
+    ///
+    /// The palette was built at asset load because the textures behind it are
+    /// freed straight afterwards. The rest is read here: the colour maps, the
+    /// marker pictures and the block names come out of assets the server keeps,
+    /// so the only reason they were up there was that the palette had to be.
+    /// </summary>
+    private void WriteWhatTheAssetsSaid(ICoreServerAPI api)
+    {
+        if (_raw is not { } raw)
+        {
+            api.Logger.Warning(
+                "[witchlight] no palette was built while the assets were loading, so the map "
+                + "has no colours. This is a bug in this mod.");
+            return;
+        }
+
+        _built = PaletteExchange.Settle(api, Settings.Exports, raw);
         var palette = _built.Palette;
 
         var (maps, mapsFound) = ColourMaps.Export(api, Settings.Exports);
@@ -400,9 +565,6 @@ public partial class WitchlightSystem : ModSystem
 
     /// <summary>Chunk columns each way from spawn for the initial map.</summary>
     private const int SeedRadius = 8;
-
-    /// <summary>Long enough after start that the world is ready to generate.</summary>
-    private const int SeedDelayMs = 10000;
 
     /// <summary>
     /// How often the surface is re-exported. Frequent enough to be useful while

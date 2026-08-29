@@ -61,6 +61,37 @@ public sealed class DirtyColumns
     }
 
     /// <summary>
+    /// Notes columns that were already in memory before anything was watching.
+    ///
+    /// The server loads a square of chunks around spawn while it is starting, and
+    /// it does that before the mod has anywhere to write — so those columns raise
+    /// their one ChunkDirty into nothing, and the server holds them for as long as
+    /// it runs, so they never raise another. Nothing else ever asks for them
+    /// either: a request for a column already in memory is answered from memory
+    /// and queues nothing.
+    ///
+    /// The result was a square hole at spawn, on a map that was correct in every
+    /// direction around it, that no amount of walking would fill in.
+    ///
+    /// Called with what is loaded at the moment the export starts watching, and
+    /// only for what is not already on disk: a column in memory that has never
+    /// been read is a column to read.
+    /// </summary>
+    public void MarkUnexported(IEnumerable<(int, int)> loaded)
+    {
+        lock (_gate)
+        {
+            foreach (var column in loaded)
+            {
+                if (!_exported.Contains(column))
+                {
+                    _dirty.Add(column);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Records columns that are already in an export on disk, so that loading
     /// them again is not mistaken for a change. Called once at start with what a
     /// previous run left behind.

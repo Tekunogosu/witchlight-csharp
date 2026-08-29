@@ -67,16 +67,34 @@ public sealed class PaletteExchange
     public bool Wanted { get; private set; }
 
     /// <summary>
-    /// Builds what this side can and reconciles it with whatever is on disk.
+    /// What this side could build, before it has anywhere to put it.
     ///
-    /// Run at asset load, which is the only window: the server frees block
+    /// Built at asset load, which is the only window: the server frees block
     /// textures once assets are loaded, so a palette not built by then cannot be
-    /// built at all — and that is before there is a server API to ask anybody
-    /// anything with, which is why this is not a method on an instance.
+    /// built at all. Where it goes is another question and is answered later —
+    /// the map may be filed per world, and which world is running is not known
+    /// this early.
     /// </summary>
-    public static Built Bootstrap(ICoreAPI api, string exports)
+    public sealed record Raw(Palette Palette, PaletteReport Report);
+
+    /// <summary>Reads the blocks while their textures are still in memory.</summary>
+    public static Raw BuildFromAssets(ICoreAPI api)
     {
         var built = PaletteBuilder.Build(api, out var report);
+        return new Raw(built, report);
+    }
+
+    /// <summary>
+    /// Reconciles what was built with whatever is already on disk, and writes it.
+    ///
+    /// Run once the world is up and the map's directory is settled. Split from
+    /// the building above because the two answer to different clocks: one has to
+    /// happen while the textures are there, the other cannot happen until there
+    /// is somewhere to write.
+    /// </summary>
+    public static Built Settle(ICoreAPI api, string exports, Raw raw)
+    {
+        var (built, report) = (raw.Palette, raw.Report);
 
         var path = Palette.PathIn(exports);
         var existing = Palette.Read(path);
