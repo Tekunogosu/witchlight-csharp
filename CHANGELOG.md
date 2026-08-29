@@ -8,6 +8,133 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.26.3
+
+**Deploy note:** nothing to do by hand, nothing is cleared, and nothing behaves
+differently. A refactoring pass with no change to what the mod does.
+
+**One owner for what the channel carries.** Both halves registered the same seven
+message types in the same order, written out twice. The game numbers them by that
+order and matches a packet to a reader by the number, so a list that differed by
+one entry would have been every message after it read as the wrong thing — with
+nothing anywhere saying so. `Channel` holds the name and the list, and each side
+asks for them.
+
+**`Live.cs` was three subjects in the markers folder.** Where a player is
+standing, what the world's clock says and what markers exist travelled on the same
+beat and had nothing else in common. They are `Players/PlayerFeed`,
+`Map/WorldClock` and `Markers/MarkerFeed` now, and the floor that puts a position
+on the block grid — which two of them needed — is `Util/Blocks`.
+
+**The greeting and the asset window left the system file**, which was doing five
+jobs in seven hundred lines. Both are `partial class WitchlightSystem`, the way
+the commands already were: a view of the whole system rather than a type of its
+own. `Readback` has its own file, being its own class in a file named for another.
+
+**`world.json` and `service.json` name themselves once**, the way the palette, the
+block names, the colour maps and the icons already did. Each had been spelled at
+three call sites.
+
+## 0.26.2
+
+**Deploy note:** nothing to do by hand, and nothing is cleared. The service half
+is untouched and stays at 0.26.1.
+
+**Fixes 0.26.1, which stopped the greeting reaching anybody at all.** That release
+guarded the greeting on the player being in `EnumClientState.Playing`, on the
+assumption that a player who is in the world is playing. They are not: that state
+is set by a packet the client sends once it has finished loading and, on a first
+join, once the character screen closes — which is the same signal `PlayerReady`
+waits on, and on a server where that signal does not arrive the guard refused
+every player. It refused them before the retry that was meant to cover a slow
+start, so nothing was said and nothing was logged.
+
+A player at `PlayerNowPlaying` is `Connected`: in the world, and able to be sent a
+line of chat. The greeting now stops only for somebody who has gone offline, which
+is the thing that check was ever for.
+
+**The log line says which state the player was in when they were told**, because
+one wrong belief about that value is the whole of what this release fixes, and
+nothing in a log would have shown it.
+
+## 0.26.1
+
+**Deploy note:** nothing to do by hand, and nothing is cleared. The service half
+is untouched and stays at 0.26.1.
+
+**This release did not work — see 0.26.2, which fixes it.** What follows is what
+it set out to do, and 0.26.2 does.
+
+**The map's address is said the moment a player is in the world, rather than up
+to twenty seconds later.** It was said on `PlayerReady`, with a twenty second
+timer behind it in case that event never arrived — and on a server where it does
+not arrive, the timer was what said it every time. That timer is gone. The
+greeting now goes out on `PlayerNowPlaying`, which is the earliest moment a
+player can be sent anything at all.
+
+`PlayerReady` still speaks, but only when the first line cannot have been read.
+On a first join the character and class screen is up while `NowPlaying` fires and
+a line of chat behind it is a line nobody sees; `PlayerReady` comes after that
+screen closes. For everybody else the two arrive in the same breath. The gap
+between them is what tells those two cases apart, so nothing has to guess which
+kind of join it is looking at.
+
+**A player who joined before the service had published its address is no longer
+told nothing at all.** The greeting was marked as given before there was anything
+to give, so a join in the second or two between the world coming up and the
+service saying where it is listening consumed the one chance and went unanswered
+until that player reconnected. A greeting now counts as given only once something
+has been said, and is tried again a few seconds later until there is.
+
+**And it says in the log that it said it.** How long a player waits for that line
+was the one thing nothing anywhere recorded, which is why this took a session to
+find rather than a look at a log.
+
+## 0.26.0
+
+**Deploy note:** both halves go together, as a minor always means. Nothing here
+changed — no format, no protocol, no map cleared. The number moves so that this
+half stays on the same compatibility generation as the map service, which fixed
+two windows that could not be closed and gave the marker list a switch for who
+may see each marker. See the [service changelog](../rust/witchlight/CHANGELOG.md).
+
+## 0.25.0
+
+**Deploy note:** both halves go together, as a minor always means, and this one
+means it literally — the shape this posts players in changed, so a mismatched pair
+shows an empty player list and the service says why in its log. No map is cleared.
+An operator who wants the old behaviour has it: `players_public` defaults to on.
+
+**Who is online is now sorted by who may see them**, the way the markers already
+were. Where `players_public` is on, everybody goes in one list and nothing else is
+worked out. Where it is off, each person gets a list of their own — themselves,
+and whoever the game has in a group with them — and the service hands out lists it
+never looks into.
+
+Sorted here rather than by the service because this is the half that knows what
+groups the game has people in, and a service holding positions it must not send is
+one bug away from sending them. How many are online travels with it and is said to
+everybody: that is a fact about the server rather than about anybody on it.
+
+Group membership is read off the players who are on, which the game answers for
+directly. Somebody reading the map while their own player is offline is therefore
+shown what everybody is shown.
+
+**`players_public`, on by default.** Vintage Story has no setting of its own to
+follow: its server config says nothing about who may see whom, and `allowMap` in
+the world config decides whether there is a map at all, which is a different
+question. So this is witchlight's own, and it sits with the other map settings
+because it is the map it is about.
+
+## 0.24.0
+
+**Deploy note:** both halves go together, as a minor always means. Nothing here
+changed — no format, no protocol, no map cleared. The number moves so that this
+half stays on the same compatibility generation as the map service, which grew a
+window listing every marker there is and reworked the one that holds the presets.
+See the [service changelog](../rust/witchlight/CHANGELOG.md) for what a player
+will actually see.
+
 ## 0.23.0
 
 **Deploy note:** both halves go together, as a minor always means — this posts

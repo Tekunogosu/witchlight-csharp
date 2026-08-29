@@ -18,8 +18,6 @@ namespace Witchlight;
 /// </summary>
 public static class SharedServer
 {
-    public const string Channel = "witchlight";
-
     public static SharedMarkers For(ICoreServerAPI api, IServerPlayer player, Visibility visibility)
     {
         var shared = new SharedMarkers();
@@ -64,7 +62,7 @@ public static class SharedServer
 
     public static void SendTo(ICoreServerAPI api, IServerPlayer player, Visibility visibility)
     {
-        api.Network.GetChannel(Channel)?.SendPacket(For(api, player, visibility), player);
+        api.Network.GetChannel(Channel.Name)?.SendPacket(For(api, player, visibility), player);
     }
 
     public static void SendToAll(ICoreServerAPI api, Visibility visibility)

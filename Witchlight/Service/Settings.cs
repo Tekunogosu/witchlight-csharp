@@ -124,6 +124,27 @@ public static class Settings
     public static bool PublicMarkersEditable => On("markers_public_editable", byDefault: false);
 
     /// <summary>
+    /// Whether where a player is standing is everybody's to see.
+    ///
+    /// On by default, which is what a map of a server people play on together is
+    /// for. An operator running a server where being findable is not part of the
+    /// deal turns it off, and then a player shows on the map to their own group
+    /// and to nobody else. How many are online is still said to everyone: that is
+    /// a fact about the server rather than about anybody on it.
+    ///
+    /// Vintage Story has no setting of its own to follow. Its server config says
+    /// nothing about who may see whom, and the nearest thing in the world config,
+    /// `allowMap`, decides whether there is a map at all — a different question.
+    /// So this is witchlight's own, and it sits with the map settings because it
+    /// is the map it is about.
+    ///
+    /// Enforced here rather than by the service, for the reason the markers are:
+    /// this is the half that knows what groups the game has people in, and a
+    /// service holding positions it must not send is one bug from sending them.
+    /// </summary>
+    public static bool PlayersPublic => On("players_public", byDefault: true);
+
+    /// <summary>
     /// The address to give a player, or null when there is none to give.
     ///
     /// What an operator set, if they set anything. A server on the open internet
@@ -138,6 +159,14 @@ public static class Settings
     }
 
     /// <summary>
+    /// Where the service writes the addresses it answers on.
+    ///
+    /// Named here because this is the half that reads it, and named once because
+    /// two other places quote it in what they tell an operator to go and look at.
+    /// </summary>
+    public static string AddressPath => System.IO.Path.Combine(Exports, "service.json");
+
+    /// <summary>
     /// Where the map is listening, as the service itself last published it.
     ///
     /// The service works out which addresses its bind address actually answers on
@@ -148,7 +177,7 @@ public static class Settings
     {
         try
         {
-            var path = System.IO.Path.Combine(Exports, "service.json");
+            var path = AddressPath;
             if (!File.Exists(path))
             {
                 return null;

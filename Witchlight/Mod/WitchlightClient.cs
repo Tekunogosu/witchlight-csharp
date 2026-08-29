@@ -37,14 +37,8 @@ public partial class WitchlightClient : ModSystem
         _watch = new PortraitWatch(api, () => SendPortrait(byHand: false));
 
         api.Network
-            .RegisterChannel(SharedServer.Channel)
-            .RegisterMessageType<SharedMarkers>()
-            .RegisterMessageType<PaletteRequest>()
-            .RegisterMessageType<PaletteTable>()
-            .RegisterMessageType<IconRequest>()
-            .RegisterMessageType<IconTable>()
-            .RegisterMessageType<PortraitRequest>()
-            .RegisterMessageType<PlayerPortrait>()
+            .RegisterChannel(Channel.Name)
+            .Carrying()
             .SetMessageHandler<SharedMarkers>(message => _markers?.Take(message))
             .SetMessageHandler<PaletteRequest>(OnPaletteRequest)
             .SetMessageHandler<IconRequest>(OnIconRequest)

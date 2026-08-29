@@ -10,6 +10,16 @@ namespace Witchlight;
 public class WorldFacts
 {
     /// <summary>
+    /// Where a world's facts are filed.
+    ///
+    /// Named once, the way every other export names itself — the palette, the
+    /// block names, the colour maps and the icons each answer for their own path,
+    /// and a file whose name is spelled at three call sites is a file that can be
+    /// renamed at two of them.
+    /// </summary>
+    public static string PathIn(string exports) => Path.Combine(exports, "world.json");
+
+    /// <summary>
     /// Where the game counts from.
     ///
     /// Vintage Story shows coordinates relative to world spawn, everywhere a
@@ -79,7 +89,7 @@ public class WorldFacts
     {
         try
         {
-            var path = Path.Combine(exports, "world.json");
+            var path = PathIn(exports);
             return File.Exists(path)
                 ? JsonConvert.DeserializeObject<WorldFacts>(File.ReadAllText(path))?.Name
                 : null;
@@ -108,7 +118,7 @@ public class WorldFacts
         }
 
         return $"counts from: spawn at {spawn.X}, {spawn.Z}"
-            + (File.Exists(Path.Combine(exports, "world.json"))
+            + (File.Exists(PathIn(exports))
                 ? ""
                 : "  (world.json not written — the map counts from absolute zero)");
     }
@@ -145,7 +155,7 @@ public class WorldFacts
             };
 
             Disk.Write(
-                Path.Combine(exports, "world.json"), JsonConvert.SerializeObject(facts));
+                PathIn(exports), JsonConvert.SerializeObject(facts));
 
             api.Logger.Notification(
                 "[witchlight] the map counts from spawn at {0}, {1}", spawn.Value.X, spawn.Value.Z);

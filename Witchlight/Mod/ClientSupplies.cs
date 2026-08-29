@@ -52,7 +52,7 @@ public partial class WitchlightClient
             }
 
             var slices = PaletteTable.Slice(palette);
-            var channel = capi.Network.GetChannel(SharedServer.Channel);
+            var channel = capi.Network.GetChannel(Channel.Name);
             foreach (var slice in slices)
             {
                 channel.SendPacket(slice);
@@ -150,7 +150,7 @@ public partial class WitchlightClient
         var slices = IconTable.Slice(icons);
         foreach (var slice in slices)
         {
-            capi.Network.GetChannel(SharedServer.Channel).SendPacket(slice);
+            capi.Network.GetChannel(Channel.Name).SendPacket(slice);
         }
 
         capi.Logger.Notification(

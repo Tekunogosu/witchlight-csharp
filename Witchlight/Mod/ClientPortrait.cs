@@ -96,7 +96,7 @@ public partial class WitchlightClient
                 _askedAt = DateTime.UtcNow;
             }
 
-            capi.Network.GetChannel(SharedServer.Channel).SendPacket(new PlayerPortrait { Png = png });
+            capi.Network.GetChannel(Channel.Name).SendPacket(new PlayerPortrait { Png = png });
             capi.Logger.Notification("[witchlight] sent a {0} byte portrait ({1})", png.Length, said);
             if (byHand)
             {

@@ -51,7 +51,7 @@ public sealed class IconExchange
 
     private void Ask(IServerPlayer player, List<string> have)
     {
-        _api.Network.GetChannel(SharedServer.Channel)
+        _api.Network.GetChannel(Channel.Name)
             .SendPacket(new IconRequest { Have = have }, player);
     }
 

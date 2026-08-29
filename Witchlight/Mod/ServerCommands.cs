@@ -150,7 +150,7 @@ public partial class WitchlightSystem
                 : "wanted: nothing, the palette is good enough",
             _exporter?.Describe() ?? "terrain: not exporting yet",
             $"mapped: {_exporter?.Mapped ?? 0} chunks",
-            $"markers: {Live.Waypoints(api, _visibility).Count} saved on this server"
+            $"markers: {MarkerFeed.All(api, _visibility).Count} saved on this server"
                 + $", {_visibility.Decisions} with a chosen visibility",
             $"icons: {_icons?.Count ?? 0} for drawing them",
             $"portraits: {Portraits.Count(Settings.Exports)} sent by players",

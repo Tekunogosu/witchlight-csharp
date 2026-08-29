@@ -87,7 +87,7 @@ public sealed class PortraitExchange
     public void Ask(IServerPlayer player)
     {
         _asked.Note(player.PlayerUID);
-        _api.Network.GetChannel(SharedServer.Channel).SendPacket(new PortraitRequest(), player);
+        _api.Network.GetChannel(Channel.Name).SendPacket(new PortraitRequest(), player);
     }
 
     /// <summary>

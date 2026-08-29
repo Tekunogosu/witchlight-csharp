@@ -232,7 +232,7 @@ public sealed class ServiceProcess : IDisposable
     {
         foreach (var path in new[]
                  {
-                     Path.Combine(Settings.Exports, "service.json"),
+                     Settings.AddressPath,
                      MapService.ConnectionPath(Settings.Exports),
                  })
         {

@@ -178,7 +178,7 @@ public sealed class PaletteExchange
     {
         _askedUid = player.PlayerUID;
         _askedAt = DateTime.UtcNow;
-        _api.Network.GetChannel(SharedServer.Channel)
+        _api.Network.GetChannel(Channel.Name)
             .SendPacket(new PaletteRequest { Fingerprint = Fingerprint }, player);
         _api.Logger.Notification(
             "[witchlight] asked {0} for a block colour palette", player.PlayerName);
