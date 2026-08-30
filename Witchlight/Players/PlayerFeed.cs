@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
 using Vintagestory.API.Common;
+using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
 namespace Witchlight;
@@ -35,6 +36,17 @@ public class LivePlayer
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
+
+    /// <summary>
+    /// Which way they are looking, in degrees clockwise from north.
+    ///
+    /// A compass bearing rather than the game's own angle, because that is what a
+    /// north-up map turns a picture of a player by. The game holds a yaw in
+    /// radians that starts from south and turns the other way, so the one place
+    /// that reads the game's convention is the one that converts it, and nothing
+    /// downstream has to know the game had a different idea of an angle.
+    /// </summary>
+    public float Facing { get; set; }
 
     /// <summary>
     /// Health and food, as the server already knows them.
@@ -188,6 +200,18 @@ public static class PlayerFeed
         return groups;
     }
 
+    /// <summary>
+    /// A game yaw as a compass bearing: degrees clockwise from north, under 360.
+    ///
+    /// The game's yaw is radians from south, anticlockwise: zero is looking south
+    /// and a quarter turn is looking east, which is what
+    /// <c>BlockFacing.HorizontalFromYaw</c> reads it as and what the client's own
+    /// map turns its player marker by. A bearing is degrees from north, clockwise,
+    /// so the half turn and the change of sign are both the difference between the
+    /// two and neither is a correction to the other.
+    /// </summary>
+    private static float Bearing(float yaw) => GameMath.Mod(180f - yaw * GameMath.RAD2DEG, 360f);
+
     public static List<LivePlayer> All(ICoreServerAPI api, string exports)
     {
         var players = new List<LivePlayer>();
@@ -210,6 +234,7 @@ public static class PlayerFeed
                 X = Blocks.At(position.X),
                 Y = Blocks.At(position.Y),
                 Z = Blocks.At(position.Z),
+                Facing = Bearing(position.Yaw),
                 Health = health?.GetFloat("currenthealth") ?? 0f,
                 MaxHealth = health?.GetFloat("maxhealth") ?? 0f,
                 Saturation = hunger?.GetFloat("currentsaturation") ?? 0f,

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Threading.Tasks;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -162,7 +161,7 @@ public partial class WitchlightSystem
 
         // The address on its own is what somebody bookmarks, so it is said either
         // way and said as itself. The link beside it is spent on one press.
-        var address = $"The map is at {AsLink(where, where)}";
+        var address = $"The server map url: {AsLink(where, where)}. ";
 
         // Signing them in is the same thing `/witchlight login` does, so it is
         // offered to exactly whoever could have typed that — and only where there
@@ -186,8 +185,7 @@ public partial class WitchlightSystem
                 // joined a server never asked, and the address still works.
                 link is null
                     ? address
-                    : $"{address}. {AsLink(link, "Open it signed in")} — that link works "
-                      + "once, for ten minutes.",
+                    : $"{address}. {AsLink(link, "Sign in")}. This link is good for 10 minutes",
                 EnumChatType.Notification);
             // Said here rather than only in the log of a failure. How long a
             // player waits for this line was the thing nothing recorded, and it

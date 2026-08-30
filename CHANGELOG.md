@@ -8,6 +8,30 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.27.1
+
+**Deploy note:** the mod half only; the service stays at 0.27.0. Nothing is
+cleared.
+
+**A player faces the way they are looking rather than the way they came from.**
+The game's yaw is measured from south, which is what `BlockFacing.HorizontalFromYaw`
+reads it as and what the client's own map turns its marker by. It was converted
+here as though it were measured from north, so every player on the map pointed
+exactly backwards.
+
+## 0.27.0
+
+**Deploy note: both halves.** Minor is the compatibility generation and it moves
+together, so the service goes up with the mod. Nothing is cleared and no map is
+rebuilt.
+
+**A player says which way they are looking.** `Facing` travels with each player's
+position: degrees clockwise from north, which is a compass bearing and therefore
+the angle a north-up map turns a picture by. The game holds a yaw in radians that
+counts the other way round, and this is the half that knows that, so the turn
+happens here once rather than wherever a map is drawn. The map service draws it
+as the game's own player marker — a dot with a cone for the heading.
+
 ## 0.26.3
 
 **Deploy note:** nothing to do by hand, nothing is cleared, and nothing behaves

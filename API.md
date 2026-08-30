@@ -125,7 +125,7 @@ the west and the one to the north. Those neighbours are in the list already.
 ### `GET /live.json`
 
 ```json
-{"Players":[{"Name":"ada","Uid":"...","X":511900,"Y":110,"Z":511901,
+{"Players":[{"Name":"ada","Uid":"...","X":511900,"Y":110,"Z":511901,"Facing":270,
               "Portrait":"6164...","PortraitAt":1756315231}],
  "Waypoints":[{"Title":"Forge","Icon":"circle","Color":"#00ff00",
                "X":511810,"Y":110,"Z":511810,"Owner":"ada",
@@ -153,6 +153,12 @@ Empty is empty. Nothing here reads a file this build does not write, so an empty
 `Waypoints` means the mod posted none — not that a stale file could not be found.
 
 `Color` is CSS; the game stores a packed integer and the mod converts it.
+
+`Facing` is which way that player is looking, in degrees clockwise from north:
+zero is north, ninety is east. A compass bearing rather than the game's own angle,
+which is radians measured from south and turning the other way — the mod converts
+it, so nothing that draws a map has to know the game measures an angle
+differently.
 
 `Portrait` is the name of a picture that player's own client sent, served at
 `/portraits/{Portrait}.png`, or absent where they have sent none. It is the uid in

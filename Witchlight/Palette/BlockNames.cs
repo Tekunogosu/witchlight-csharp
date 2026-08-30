@@ -71,7 +71,7 @@ public static class BlockNames
             var said = NameOf(block);
             // A name that is only the code again says nothing the reader of this
             // file does not already have, and there are thousands of them.
-            if (said is null || said.Length == 0 || said == code)
+            if (string.IsNullOrEmpty(said) || said == code)
             {
                 continue;
             }
