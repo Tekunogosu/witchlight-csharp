@@ -43,19 +43,24 @@ public partial class WitchlightSystem
     /// freed straight afterwards. The rest is read here: the colour maps, the
     /// marker pictures and the block names come out of assets the server keeps,
     /// so the only reason they were up there was that the palette had to be.
+    ///
+    /// Hands the settled palette back rather than leaving it in a field. It used
+    /// to be a field, and the one caller read it before this had run — so the
+    /// half of the mod that asks a client for a palette was built against a null
+    /// and never asked anybody. A value that is returned cannot be read early.
     /// </summary>
-    private void WriteWhatTheAssetsSaid(ICoreServerAPI api)
+    private PaletteExchange.Built? WriteWhatTheAssetsSaid(ICoreServerAPI api)
     {
         if (_raw is not { } raw)
         {
             api.Logger.Warning(
                 "[witchlight] no palette was built while the assets were loading, so the map "
                 + "has no colours. This is a bug in this mod.");
-            return;
+            return null;
         }
 
-        _built = PaletteExchange.Settle(api, Settings.Exports, raw);
-        var palette = _built.Palette;
+        var settled = PaletteExchange.Settle(api, Settings.Exports, raw);
+        var palette = settled.Palette;
 
         var (maps, mapsFound) = ColourMaps.Export(api, Settings.Exports);
         api.Logger.Notification("[witchlight] colour maps: {0} of {1} written", maps, mapsFound);
@@ -77,6 +82,8 @@ public partial class WitchlightSystem
                 "[witchlight] no named block is in the palette, so the map will show codes "
                 + "rather than names. The two are keyed differently, which is a bug in this mod.");
         }
+
+        return settled;
     }
 
     /// <summary>

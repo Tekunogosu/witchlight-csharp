@@ -11,8 +11,9 @@ namespace Witchlight;
 /// Only a player's own client can draw them: nobody else's machine has that
 /// seraph loaded, which is why a picture travels rather than a description of one.
 ///
-/// Everyone is asked, not only admins. A palette decides what everybody sees and
-/// so is taken only from an admin; a portrait decides what one card looks like
+/// Everyone is asked, and everyone may send. A palette and the marker pictures
+/// decide what everybody sees, so anybody may fill a gap in one but only an admin
+/// may change what is already there; a portrait decides what one card looks like
 /// and that card is the sender's own, which is a thing they are already entitled
 /// to be wrong about.
 ///

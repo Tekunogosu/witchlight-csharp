@@ -15,15 +15,18 @@ namespace Witchlight;
 /// connected it also holds the block ids that server assigned, so what it builds
 /// lines up with that server's exports.
 ///
-/// Nothing here is sent unprompted. The server asks, and only ever asks an admin.
+/// Nothing here is sent unprompted: the server asks and this answers. Who it asks
+/// is the server's business — anybody, where it has nothing, since a server whose
+/// operator never joins in game would otherwise have no map at all. What a
+/// non-admin sends can only fill gaps, which is decided on that side.
 /// </summary>
 public partial class WitchlightClient
 {
     /// <summary>
     /// Builds a palette and sends it, because the server asked.
     ///
-    /// The server only asks admins, and only when it could not build a usable one
-    /// itself — which is the normal case on a dedicated server.
+    /// Asked only when the server could not build a usable one itself, which is
+    /// the normal case on a dedicated server.
     /// </summary>
     private void OnPaletteRequest(PaletteRequest request)
     {
@@ -104,7 +107,8 @@ public partial class WitchlightClient
     /// Sends the marker pictures, because the server asked.
     ///
     /// Only what the server says it is missing, so a mod added later costs one
-    /// icon rather than the whole set again.
+    /// icon rather than the whole set again — and a server that already has them
+    /// all is sent nothing at all.
     /// </summary>
     private void OnIconRequest(IconRequest request)
     {

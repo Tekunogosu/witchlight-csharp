@@ -33,6 +33,7 @@ public partial class WitchlightClient : ModSystem
     {
         _capi = api;
         _markers = new SharedMarkerLayer(api);
+        ListenForMarking(api);
         _portrait = new PortraitCapture(api);
         _watch = new PortraitWatch(api, () => SendPortrait(byHand: false));
 
@@ -42,12 +43,19 @@ public partial class WitchlightClient : ModSystem
             .SetMessageHandler<SharedMarkers>(message => _markers?.Take(message))
             .SetMessageHandler<PaletteRequest>(OnPaletteRequest)
             .SetMessageHandler<IconRequest>(OnIconRequest)
-            .SetMessageHandler<PortraitRequest>(_ => SendPortrait(byHand: false));
+            .SetMessageHandler<PortraitRequest>(_ => SendPortrait(byHand: false))
+            .SetMessageHandler<MarkReply>(TakeMarkReply)
+            .SetMessageHandler<MarkNudge>(_ => AskToMark());
 
         api.ChatCommands
             .Create(Commands.Name)
             .WithShortName(api)
             .WithDescription("Witchlight map tools")
+            .BeginSubCommand("mark")
+                .WithDescription(
+                    "Mark where you are looking, using the preset for that block")
+                .HandleWith(OnMark)
+            .EndSubCommand()
             .BeginSubCommand("portrait")
                 .WithDescription("Send the map a picture of your character")
                 .HandleWith(OnPortrait)

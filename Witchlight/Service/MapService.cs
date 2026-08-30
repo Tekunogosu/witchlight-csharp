@@ -193,16 +193,22 @@ public sealed class MapService : IDisposable
     }
 
     /// <summary>
-    /// Asks the service for a login word for one player, and gives back the whole
-    /// address to hand them — or null where there is none to give.
+    /// One post on the API channel that answers with something rather than
+    /// merely being accepted.
     ///
-    /// Its own request rather than a ride on the tick, because it is the one
-    /// thing here that answers rather than merely being accepted, and because it
-    /// happens when somebody types rather than every two seconds. Awaited by the
-    /// caller off the game thread: it is an HTTP round trip, and the game does
-    /// not wait for the map.
+    /// Three things ask rather than tell — a login word, what one player has set
+    /// for themselves on the map, and the keeping of one preset — and they
+    /// differ in the address and the body alone. Each happens when somebody
+    /// types or presses something rather than every two seconds, so none of them
+    /// rides the tick, and each is awaited by its caller off the game thread: it
+    /// is an HTTP round trip, and the game does not wait for the map.
+    ///
+    /// Null where there is nothing to give back, including where the service is
+    /// not answering. That is ordinary — it is a separate program and the game
+    /// does not depend on it — and the address goes with it, so the next ask
+    /// reads where the next service bound.
     /// </summary>
-    public async Task<string?> Link(string uid, string name, string where)
+    private async Task<string?> Ask(string path, object body)
     {
         var endpoint = Where();
         if (endpoint is null)
@@ -212,9 +218,9 @@ public sealed class MapService : IDisposable
 
         try
         {
-            var asked = JsonConvert.SerializeObject(new { Uid = uid, Name = name });
+            var asked = JsonConvert.SerializeObject(body);
             using var content = new StringContent(asked, Encoding.UTF8, "application/json");
-            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + "/auth/mint")
+            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + path)
             {
                 Content = content,
             };
@@ -230,17 +236,66 @@ public sealed class MapService : IDisposable
                 return null;
             }
 
-            var body = await reply.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return await reply.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            _endpoint = null;
+            _log.Warning("[witchlight] the map did not answer {0}: {1}", path, error.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Asks the service for a login word for one player, and gives back the whole
+    /// address to hand them — or null where there is none to give.
+    /// </summary>
+    public async Task<string?> Link(string uid, string name, string where)
+    {
+        var body = await Ask("/auth/mint", new { Uid = uid, Name = name }).ConfigureAwait(false);
+        if (body is null)
+        {
+            return null;
+        }
+
+        try
+        {
             var word = (string?)JObject.Parse(body)["Token"];
             return string.IsNullOrEmpty(word) ? null : $"{where.TrimEnd('/')}/login?t={word}";
         }
         catch (Exception error)
         {
-            _endpoint = null;
-            _log.Warning("[witchlight] could not ask the map for a login link: {0}", error.Message);
+            _log.Warning("[witchlight] the map's login word could not be read: {0}", error.Message);
             return null;
         }
     }
+
+    /// <summary>
+    /// What one player has set for themselves on the map: their presets, and
+    /// where a new marker of theirs starts.
+    ///
+    /// The map's own form reads this over the public port under a session cookie.
+    /// A game client has neither, so the mod asks on its behalf — it is the only
+    /// party that knows which uid is which player, which is the same trust
+    /// minting a login word already needs.
+    ///
+    /// Asked at the moment somebody marks something rather than held and
+    /// refreshed. A preset made in a browser a minute ago must apply to the next
+    /// press of the key, and a cache with a clock on it is a cache that is wrong
+    /// for exactly as long as that clock says.
+    /// </summary>
+    public Task<string?> Presets(string uid) => Ask("/presets/of", new { Uid = uid });
+
+    /// <summary>
+    /// Keeps one preset for one player, and gives back everything they have set.
+    ///
+    /// One preset rather than the whole document: this side knows the one made in
+    /// front of somebody in game and nothing else about what they have kept, and
+    /// writing a whole document back from that would delete every preset they
+    /// made in a browser.
+    /// </summary>
+    public Task<string?> KeepPreset(string uid, object preset) =>
+        Ask("/presets/keep", new { Uid = uid, Preset = preset });
 
     /// <summary>
     /// Takes the markers somebody asked for on the web, and leaves the service

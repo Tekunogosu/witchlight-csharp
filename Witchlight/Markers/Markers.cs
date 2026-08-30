@@ -185,12 +185,34 @@ public static class Markers
     }
 
     /// <summary>
+    /// Puts a player's whole set of waypoints on their client again.
+    ///
+    /// The layer sends a set rather than a waypoint, and the only thing it offers
+    /// for asking is the call it makes when somebody's map view moves — which is
+    /// what has happened, from the client's point of view, whenever this side has
+    /// changed one of theirs. An owner who is not online is sent nothing and
+    /// needs nothing: the layer resends on their next view change either way.
+    ///
+    /// Both the changing and the removing of a marker go through this, because
+    /// "make sure they see it" is one thing and had grown two answers.
+    /// </summary>
+    public static void Resend(ICoreServerAPI api, string? ownerUid)
+    {
+        if (Layer(api) is not { } layer)
+        {
+            return;
+        }
+        if (api.World.PlayerByUid(ownerUid ?? "") is IServerPlayer owner)
+        {
+            layer.OnViewChangedServer(owner, 0, 0, 0, 0);
+        }
+    }
+
+    /// <summary>
     /// Changes a waypoint that already exists, and makes sure its owner sees it.
     ///
-    /// The layer resends a player's whole set rather than one waypoint, and the
-    /// only way to ask it to is to add one — so an owner who is online is given
-    /// the same waypoint back out of the list and in again. The guid does not
-    /// move, so nothing that knows this marker loses track of it.
+    /// The guid does not move, so nothing that knows this marker loses track of
+    /// it — which is what lets a browser recognise its own edit arriving.
     /// </summary>
     public static void Change(
         ICoreServerAPI api,
@@ -204,18 +226,36 @@ public static class Markers
         waypoint.Title = title;
         waypoint.Icon = icon;
         waypoint.Color = color;
+        Resend(api, waypoint.OwningPlayerUid);
+    }
+
+    /// <summary>
+    /// Takes a waypoint off the map, and off its owner's.
+    ///
+    /// Only its owner may, whatever <c>public_markers_editable</c> says. That
+    /// setting lets somebody correct a marker they can see, which is not the same
+    /// permission as taking it off the map of the person who made it — and there
+    /// is no way back from this one.
+    ///
+    /// The decision about who could see it goes on the next save, which is where
+    /// the store already drops what no longer exists. Answers whether anything
+    /// was removed.
+    /// </summary>
+    public static bool Remove(ICoreServerAPI api, Waypoint waypoint, string uid)
+    {
+        if (string.IsNullOrEmpty(uid) || waypoint.OwningPlayerUid != uid)
+        {
+            return false;
+        }
 
         var layer = Layer(api);
-        if (layer?.Waypoints is null)
+        if (layer?.Waypoints is null || !layer.Waypoints.Remove(waypoint))
         {
-            return;
+            return false;
         }
 
-        if (api.World.PlayerByUid(waypoint.OwningPlayerUid ?? "") is IServerPlayer owner)
-        {
-            layer.Waypoints.Remove(waypoint);
-            layer.AddWaypoint(waypoint, owner);
-        }
+        Resend(api, uid);
+        return true;
     }
 
     /// <summary>

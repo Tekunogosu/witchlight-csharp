@@ -16,8 +16,9 @@ namespace Witchlight;
 /// mean handing that type every field this one already has. What it is kept apart
 /// from is the wiring — nothing here decides when anything runs.
 ///
-/// Everything but `login` is an operator's. Every player has their own markers
-/// and their own settings, so every player can ask for the link that reaches them.
+/// Everything but `login` and `mark` is an operator's. Every player has their own
+/// markers and their own settings, so every player can ask for the link that
+/// reaches them and can mark the place they are standing in.
 /// </summary>
 public partial class WitchlightSystem
 {
@@ -33,6 +34,13 @@ public partial class WitchlightSystem
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(OnLogin)
+            .EndSubCommand()
+            .BeginSubCommand("mark")
+                .WithDescription(
+                    "Mark where you are looking, using your preset for that block")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .HandleWith(OnMarkHere)
             .EndSubCommand()
             .BeginSubCommand("export")
                 .WithDescription("Write the surface of every loaded chunk")
@@ -110,6 +118,34 @@ public partial class WitchlightSystem
     }
 
     /// <summary>
+    /// Marks where a player is looking, from the slash side of the command tree.
+    ///
+    /// The game keeps client and server commands in separate registries, so
+    /// `/witchlight mark` and `.witchlight mark` are two commands — and a slash
+    /// is what anybody types first. They are not two behaviours: which block
+    /// somebody is looking at exists only on their own machine, so this asks that
+    /// machine rather than answering a poorer version from where they stand.
+    ///
+    /// A player without this mod's client half hears nothing back, which the
+    /// server cannot tell from a client that answered. What is said is therefore
+    /// what was actually done: the asking.
+    /// </summary>
+    private TextCommandResult OnMarkHere(TextCommandCallingArgs args)
+    {
+        if (_sapi is not { } api)
+        {
+            return TextCommandResult.Error("server not ready");
+        }
+        if (args.Caller.Player is not IServerPlayer player)
+        {
+            return TextCommandResult.Error("Only a player is standing anywhere.");
+        }
+
+        api.Network.GetChannel(Channel.Name).SendPacket(new MarkNudge(), player);
+        return TextCommandResult.Success("Marking…");
+    }
+
+    /// <summary>
     /// Writes the loaded world's surface. Exporting what is in memory keeps this
     /// a command an operator can run on a live server; chunks nobody has visited
     /// are not in memory and are not in the export.
@@ -146,7 +182,7 @@ public partial class WitchlightSystem
             WorldFacts.Describe(api, Settings.Exports),
             _serviceProcess?.Describe() ?? $"service: not run from here; settings at {Settings.Path}",
             _palettes is { Wanted: true }
-                ? "wanted: a palette from an admin's client"
+                ? "wanted: a palette from a player's client"
                 : "wanted: nothing, the palette is good enough",
             _exporter?.Describe() ?? "terrain: not exporting yet",
             $"mapped: {_exporter?.Mapped ?? 0} chunks",
@@ -230,7 +266,7 @@ public partial class WitchlightSystem
     }
 
     /// <summary>
-    /// Asks for a palette now rather than waiting for the next admin to join.
+    /// Asks for a palette now rather than waiting for the next player to join.
     /// Names a player, or asks whoever ran the command.
     /// </summary>
     private TextCommandResult OnPaletteFetch(TextCommandCallingArgs args)

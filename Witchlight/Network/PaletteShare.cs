@@ -6,7 +6,7 @@ using ProtoBuf;
 namespace Witchlight;
 
 /// <summary>
-/// Sent to one admin when the server cannot build a usable palette itself.
+/// Sent to one player when the server cannot build a usable palette itself.
 /// </summary>
 [ProtoContract]
 public class PaletteRequest

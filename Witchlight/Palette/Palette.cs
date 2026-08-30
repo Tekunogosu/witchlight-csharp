@@ -1,3 +1,4 @@
+using Vintagestory.API.Common;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -114,16 +115,29 @@ public class Palette
     public static string PathIn(string exports) => Path.Combine(exports, "palette.json");
 
     /// <summary>Reads a palette back, or null when there is not a usable one.</summary>
-    public static Palette? Read(string path)
+    public static Palette? Read(string path, ILogger? log = null)
     {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
         try
         {
-            return File.Exists(path)
-                ? JsonConvert.DeserializeObject<Palette>(File.ReadAllText(path))
-                : null;
+            return JsonConvert.DeserializeObject<Palette>(File.ReadAllText(path));
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            // Said out loud, because the caller cannot tell this from "there is
+            // no palette yet" and the two have opposite consequences: one is a
+            // fresh map, the other is a map's colours being thrown away. A
+            // palette that will not parse is the only way a good one is lost
+            // without the block registry having moved, and it used to be silent.
+            log?.Warning(
+                "[witchlight] {0} exists but could not be read ({1}) — treating it as no palette "
+                + "at all, so any colours in it are lost",
+                path,
+                error.Message);
             return null;
         }
     }

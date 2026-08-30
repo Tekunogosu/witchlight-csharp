@@ -14,8 +14,9 @@ is written up in **[API.md](API.md)**.
 Three things a dedicated server cannot supply come from a client, for the same
 underlying reason: its install ships almost no images. The **block palette**
 decides what terrain looks like and the **marker pictures** are SVGs it has none
-of; both are asked of an admin, merged across admins, and stored so they are asked
-once rather than per join. A **portrait** is the third and is different in kind:
+of; both are asked of whoever joins, merged across whoever answers, and stored so
+they are asked once rather than per join. Anybody may supply what the server does
+not have; only an admin may replace what it does. A **portrait** is the third and is different in kind:
 what a seraph looks like exists only where it is rendered, so a player's own client
 draws one and sends the picture. Every player is asked on every join, and a client
 sends another thirty seconds after its character last changed.
@@ -201,7 +202,7 @@ server boot ─► fingerprint the block registry
              ─► palette stored for this fingerprint, and good enough?  ──yes──► done
                           │no
                           ▼
-      an admin joins, or /witchlight palette ─► "send me a palette"
+      a player joins, or /witchlight palette ─► "send me a palette"
                           ▼
       client builds one from its own assets ─► six packets ─► merged and written
 ```
@@ -215,13 +216,27 @@ agree across the wire. The server keeps its own mod set as a separate `ModStamp`
 it never sends, which still catches a mod changing its textures without moving any
 block id.
 
-**Only admins are asked**, and the privilege is re-checked when the palette
-arrives, because a packet handler is an untrusted entry point regardless of who
-was asked. One admin at a time, with a two-minute timeout before the next is
-tried. Thirty seconds after an unanswered ask the server says so in the log.
+**Anybody is asked; only an admin may overwrite.** Admins alone used to be asked,
+which is the right instinct and the wrong rule: a dedicated server is run from a
+console, and the person who runs it may never have a character on it — so a server
+whose operator never joins in game had no map at all. The two cases are not the
+same risk, and that is what the rule turns on. A colour laid over a block that has
+none can only improve on nothing; a colour laid over one somebody chose is a
+change to what is already right. So **an admin's palette is preferred over what is
+stored and anybody else's is merged as filler**, and `/witchlight palette` is the
+way back either way. The privilege is read when the palette arrives rather than
+when the ask went out, because a packet handler is an untrusted entry point
+regardless of who was asked.
+
+One player at a time, with a two-minute timeout before the next is tried. Thirty
+seconds after an unanswered ask the server says so in the log. A slice naming a
+part outside its own total, or claiming more parts than this server's registry
+could produce, ends the whole attempt — the sender no longer has to be an admin,
+and "only admins can reach it" was the whole of what bounded that memory before.
+A half-sent palette is dropped when its sender disconnects.
 
 **Palettes are merged, not replaced.** A client only has textures for the mods it
-has installed, so two admins with different sets can between them produce a
+has installed, so two players with different sets can between them produce a
 complete palette where neither could alone. Asking stops once 90% of blocks have a
 colour — a dedicated server scores about 15% on its own, a full install 99%, so
 the threshold separates them cleanly.
@@ -248,9 +263,11 @@ long name is always registered, so it is the one written down here.
 |---|---|
 | `status` | where exports live, which source the palette came from, its coverage and fingerprint, whether that fingerprint is stale, where the world counts from, whether the map service is up, and when terrain was last written |
 | `service [status\|start\|stop]` | the map service this mod runs. `start` runs it whatever `autostart` says, because somebody typing the command has asked |
-| `palette [player]` | ask an online admin for a palette now, rather than waiting for the next join |
-| `icons [player]` | ask an online admin for every marker picture again |
+| `palette [player]` | ask an online admin for a palette now, rather than waiting for the next join. Theirs replaces what is stored, which is what makes this the way to correct a map |
+| `icons [player]` | ask an online admin for every marker picture again, replacing what is there |
 | `export` | write the surface of every loaded chunk immediately |
+| `login` | send yourself a link to your own page of the map. Needs only `chat`, since it acts on nobody but its caller |
+| `mark` | mark where you are looking, using your preset for that block. Needs only `chat` too, and asks the caller's own client — which is the only side that knows what they are looking at |
 
 | `portrait [player]` | ask a player's client for a picture of their character now |
 
@@ -316,7 +333,35 @@ next join. Clients only add keys they have not seen, so the resend never
 duplicates. Markers travel by owner *name*: clients have no use for account uids,
 so those stay on the server.
 
-A marker deleted on the server stays on other players' maps until they relog.
+A marker deleted on the server leaves everybody else's map on the next share.
+The layer is laid down as a **set** rather than one waypoint at a time — every
+temporary waypoint is cleared and the current set put back whenever it differs —
+so a marker that is gone is gone by not being in the set.
+
+### Marking a place without leaving the game
+
+**Create from Witchlight preset** — a key under the character controls, bound to
+`[` — and `/wl mark`, and `.wl mark`, all do the same one thing: mark what the player is looking at the
+way they have said that kind of thing is marked. The client sends where they mean
+and which block names it, which are two different answers, since somebody looking
+at nothing means where they are standing and the block *there* is air.
+
+Every decision is the server's. It reads the block itself rather than taking a code
+from a client, asks the map service what that player has kept, and makes the marker
+from the preset whose pattern names the block. Where none does, **nothing is made**:
+the answer carries the block, a name, a colour, a picture and both of that person's
+defaults, and the client opens a window on it — with the game's own colours and
+pictures, plus the two things the game has no idea about. Saving makes the marker
+and, where "keep as preset" is on, sends the preset to the map service.
+
+A marker made this way is the same waypoint the web form's markers are, under a
+guid, with a decision recorded about who may see it. Nothing about it is special
+afterwards.
+
+`mark` is on both sides of the command tree because a slash is what anybody types
+first, and the two are one behaviour: the server's copy sends that player's own
+client a nudge and the client answers it as the key does, rather than the server
+answering a poorer version of the question from where they happen to be standing.
 
 ## Findings worth keeping
 
@@ -394,7 +439,8 @@ together.
 | `Icons/` | the marker icons, which arrive the same way a palette does |
 | `Network/` | what travels between the two sides, and how it is sliced to fit |
 | `Service/` | the other half: talking to it, running it, and what the operator set |
-| `Util/` | writing, failing, and identity — none of which know this mod's lifecycle |
+| `Gui/` | the one window this mod draws in game: making a marker from a preset |
+| `Util/` | writing, failing, patterns, and identity — none of which know this mod's lifecycle |
 
 Three of those folders each hold their own `*Exchange.cs`, because the three
 things only a client can supply — a palette, the icons, a portrait — are each a

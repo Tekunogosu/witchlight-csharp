@@ -38,6 +38,9 @@ public static class Channel
         typeof(IconTable),
         typeof(PortraitRequest),
         typeof(PlayerPortrait),
+        typeof(MarkAsk),
+        typeof(MarkReply),
+        typeof(MarkNudge),
     };
 
     /// <summary>Registers everything the channel carries, on the server.</summary>

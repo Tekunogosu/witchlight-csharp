@@ -77,6 +77,7 @@ What it changes, and the two addresses a session comes and goes by:
 |---|---|---|
 | `POST /markers` | asks the game to make a marker | `202` and the name it will have |
 | `PUT /markers/{key}` | asks the game to change one | `202` and the same name |
+| `DELETE /markers/{key}` | asks the game to take one away | `202` and the same name |
 | `GET /me/preferences.json` | this person's presets and defaults | the whole document |
 | `PUT /me/preferences.json` | replaces them | the document as it was kept |
 | `GET /login?t={word}` | spends a login link and seats the browser | `303` to `/`, with a cookie |
@@ -196,6 +197,26 @@ is the only honest confirmation there is.
 no session. `503` means the queue is full, which is a game server that has stopped
 collecting.
 
+### `DELETE /markers/{key}`
+
+```
+← 202 {"Key":"9e5738f0-303a-673d-a328-f19e0d08e7d1"}
+```
+
+No body: a removal names a waypoint rather than describing one. It waits to be
+collected like the other two, and nothing has been deleted when this answers —
+the page watches `/live.json` for the marker to *stop* arriving, which is the same
+watch an edit uses read the other way round.
+
+**Only its owner may.** `public_markers_editable` lets somebody correct a marker
+they can see; that is not the same permission as taking it off the map of the
+person who made it, and the mod decides it against the waypoint itself. A refusal
+therefore shows up as the marker still being there rather than as a status code —
+the same shape every other ask on this port has, and for the same reason.
+
+`401` means no session. `400` means a key this map never handed out. `503` means
+the queue is full.
+
 ### `GET /me.json`
 
 ```json
@@ -302,6 +323,8 @@ in the service's config file (`-a` for the address), and `WITCHLIGHT_API_BIND` a
 | `POST /live/markers` | every marker, sorted by who may see it | only when they differ from the last post |
 | `POST /markers/pending` | → the markers asked for on the web | every 2s |
 | `POST /auth/mint` | `{"Uid":…,"Name":…}` → `{"Token":…}` | when a player asks for a link |
+| `POST /presets/of` | `{"Uid":…}` → that person's whole document | when they mark something in game |
+| `POST /presets/keep` | `{"Uid":…,"Preset":{…}}` → the document as it was kept | when they keep one in game |
 
 Markers are posted sorted, because deciding who may see one needs to know what a
 waypoint is and the service does not:
@@ -318,11 +341,30 @@ markers rather than going on a channel of their own: a few hundred bytes against
 tens of kilobytes, and a service that restarted has them back on the next post
 instead of having to be told separately that it lost them.
 
-`/markers/pending` and `/auth/mint` are the two things here that answer rather
-than merely accepting. Both live on this channel because only the mod can reach
-it. `/markers/pending` **empties the queue** — a reply lost on the way back costs
-one form, where holding each marker until the mod confirmed would put the same one
-on the map twice every time an answer went missing.
+`/markers/pending` answers with all three kinds of ask at once:
+
+```json
+{"Make":[{…}],"Change":[{…}],"Remove":[{"Key":"…","Uid":"…"}]}
+```
+
+A removal carries a key and whose ask it was and nothing else. Every field a
+marker carries would be a field kept in step for a reader that never looks at it,
+and the mod reads the waypoint itself before removing anything.
+
+`/markers/pending`, `/auth/mint` and the two preset addresses are the things here
+that answer rather than merely accepting. All of them live on this channel because
+only the mod can reach it. `/markers/pending` **empties the queue** — a reply lost
+on the way back costs one form, where holding each marker until the mod confirmed
+would put the same one on the map twice every time an answer went missing.
+
+The two preset addresses exist because a game client has no session and no
+browser, so the mod asks on its behalf — it is the only party that knows which uid
+is which player, which is the same trust minting a login word already needs. Both
+answer with the whole `Person` document, the same one `/me/preferences.json`
+serves. `/presets/keep` takes **one** preset and merges it, keyed on its pattern:
+this side knows the preset made in front of somebody in game and nothing else
+about what they have kept, and writing a whole document back from that would
+delete every preset they made in a browser.
 
 Posts answer `204` on success, `400` for a body this build does not post, `401`
 without the token, `404` for another path, and `405` for anything but a POST. A
@@ -407,21 +449,61 @@ age.
 
 ### Network channel `witchlight`
 
-Registered on both sides. All three messages are protobuf.
+Registered on both sides. Every message is protobuf, and **both sides register
+them in the same order** — the game numbers them by that order, so a list that
+differs by one entry is every message after it being read as the wrong thing.
 
 | | | |
 |---|---|---|
 | `SharedMarkers` | server → client, every 15s | every shared marker not belonging to the recipient, added to their in-game map as temporary waypoints |
-| `IconRequest` | server → one admin's client | asks for marker pictures, carrying the names it already has |
+| `IconRequest` | server → a client, on join | asks for marker pictures, carrying the names it already has — so a server with the full set asks for nothing and is sent nothing |
 | `IconTable` | client → server, sliced by size | the SVGs that client's assets can supply |
 | `PortraitRequest` | server → one client, 8s after their join | asks that player to draw themselves |
 | `PlayerPortrait` | client → server, on a request and 30s after their character last changed | a PNG of that player's own seraph, drawn on their machine |
-| `PaletteRequest` | server → one admin's client | asks for a block colour palette, carrying the fingerprint it must match |
+| `PaletteRequest` | server → one client, while its palette is poor | asks for a block colour palette, carrying the fingerprint it must match |
 | `PaletteTable` | client → server, in slices of 8,000 blocks | the palette that client's assets can build |
+| `MarkAsk` | client → server, on a key or `.wl mark` or the window's Save | a place, and either "use my preset for the block there" or everything a marker is |
+| `MarkReply` | server → client, answering one | whether a marker was made, what to say about it, and — where no preset answered — everything a window should open on |
+| `MarkNudge` | server → client, on `/wl mark` | asks that player's own client to mark what they are looking at. Carries nothing |
 
 A `SharedMarker` carries a stable `Key` so a client can tell a new marker from
 one it already holds, and an `Owner` name but no uid: clients need to know whose
 a marker is, and identity is the server's business.
+
+### Marking from in game
+
+One press marks what a player is looking at, the way they have said that kind of
+thing is marked. The client sends where they mean and which block names it — two
+different answers, since somebody looking at nothing means where they are standing
+and the block *there* is air, so what names it is the one under their feet.
+
+**Every decision is the server's.** It reads the block at that position itself
+rather than taking a code from a client, asks the map service what that player has
+kept, and picks the preset whose pattern names the block. Where one does, the
+marker is made and the answer is a line of chat. Where none does, **nothing is
+made**: the answer carries the block, the name, the colour, the picture and both
+of that person's defaults, and the client opens a window on it. That is the whole
+of the difference between the two — one press did it, or one press got as far as
+it could and handed the rest over.
+
+`Private` travels as a number rather than a boolean, because "nobody has said" is
+a real third answer, and every path that flattened it made somebody's marker
+public on a server whose default is not. **Unsaid is `0`**, public is `1` and
+private is `2`: protobuf leaves out a field holding its type's default and the far
+end fills in whatever its own initializer said, so any meaning given to zero is a
+meaning that cannot be told from silence.
+
+The window offers the game's own colours and pictures, read off the waypoint
+layer, plus the two things the game has no idea about: who may see it, and whether
+this is what that block starts as from now on. Both start where the map service
+says that person set them. Saving makes the marker and, where the second is on,
+sends the preset to the map service through `/presets/keep`.
+
+The `*` grammar a preset's pattern uses is matched in two places — `presets.js` on
+the page and `BlockPattern` in the mod. Two copies of one rule is the price of the
+two sides being different languages: the page matches against the block under a
+pointer and the mod against the block under a player, and neither can wait on the
+other to answer a keypress. Change one and change the other.
 
 ### Who may see a marker
 
@@ -477,19 +559,35 @@ An answer to a `PortraitRequest` is exempt: the server knows how often it asks, 
 one ask buys one picture.
 
 The palette travels because a dedicated server's own assets are nearly empty of
-block textures, which is the usual reason a map renders blank. Only an admin is
-asked — a palette decides what every block looks like and arrives from a machine
-the server does not control — and one at a time, because the table is a few
-hundred kilobytes and every copy after the first is discarded. Tables from
-different admins are **merged**, so two admins with different mod sets can
+block textures, which is the usual reason a map renders blank. One player at a
+time, because the table is a few hundred kilobytes and every copy after the first
+is discarded, and tables are **merged**, so two players with different mod sets can
 together produce a palette neither could alone.
+
+**Anybody may fill in what is missing; only an admin may replace what is there.**
+This is the rule for the palette and for the marker pictures both. Admins alone
+used to be asked, which left a server whose operator never joins in game with no
+map: a dedicated server is run from a console, and the default role a joining
+player gets carries no `controlserver`. The two cases are not the same risk — a
+colour or a picture laid where there is none can only improve on nothing, and one
+laid over what somebody chose is a change to what is already right. So an admin's
+palette is preferred over what is stored, anybody else's is merged as filler, a
+non-admin's marker pictures are filtered to names the server has no file for, and
+`/witchlight palette` and `/witchlight icons` are the way back either way.
+
+Opening the door needs the bounds that "only an admin can reach it" used to
+supply. A palette slice naming a part outside its own total, or claiming more parts
+than this server's registry could produce, ends the whole attempt; a half-sent
+palette is dropped when its sender disconnects; and a non-admin's marker pictures
+stop at 512 files, which is well past a heavy mod set and well short of a disk.
 
 ### Chat commands
 
 **The prefix says which side runs it.** The game gives server commands `/` and
 client commands `.`, and they are separate registries — `/witchlight palette` asks
-the server to request a palette from an admin, while `.witchlight palette` is that
-admin's own client building one and sending it unprompted. The server side is the
+the server to request a palette from a named admin, while `.witchlight palette` is
+a client building one and writing it beside its own world data for an operator to
+move across by hand. The server side is the
 one to reach for; the client side exists for sending something without being
 asked.
 
@@ -502,10 +600,11 @@ log says so. Every table below gives the long name, since that is the one that i
 always there.
 
 Every server command requires the `controlserver` privilege, inherited from the
-root down the command tree — except `login`, which requires only `chat` and a
-player to have typed it, because it acts on nothing but its own caller. The client ones are not privileged — `.witchlight
-portrait` is a player sending their own picture, and the server drops a palette or
-a set of icons from anybody who is not an admin regardless of what asked for it.
+root down the command tree — except `login` and `mark`, which require only `chat`
+and a player to have typed them, because they act on nothing but their own caller.
+The client ones are not privileged — `.witchlight portrait` is a player sending
+their own picture — and what the server does with a palette or a set of icons is
+decided by the sender's privilege when it arrives, not by what asked for it.
 
 | | |
 |---|---|
@@ -513,7 +612,8 @@ a set of icons from anybody who is not an admin regardless of what asked for it.
 | `/witchlight status` | where the exports are, where the palette came from, how much terrain is stored, where the world counts from, whether the map service is up, and how many columns are waiting |
 | `/witchlight portrait [player]` | ask a player's client for a picture of their character now, rather than waiting for their next join |
 | `/witchlight service [status\|start\|stop]` | the map service the mod runs. `start` ignores `autostart`, which only decides what happens unasked |
-| `/witchlight login` | send yourself a link that logs your browser in as you. The one subcommand that is **not** privileged — every player has settings of their own |
+| `/witchlight login` | send yourself a link that logs your browser in as you. Not privileged — every player has settings of their own |
+| `/witchlight mark` | mark where you are looking, using your preset for that block. Not privileged either, and the same one thing `.witchlight mark` does |
 | `/witchlight palette [player]` | ask an admin's client for a palette now, rather than waiting for the next one to join |
 | `/witchlight icons [player]` | ask an admin's client for every marker picture again |
 
@@ -521,9 +621,24 @@ On a client, with a dot rather than a slash:
 
 | | |
 |---|---|
+| `.witchlight mark` | mark where you are looking, using your preset for that block. Opens a window where no preset names it |
 | `.witchlight portrait` | draw your character and send the picture. Once every five minutes; the map asks on its own besides |
 | `.witchlight palette` | build a block palette and send it |
 | `.witchlight icons` | send the marker pictures |
+
+**`mark` is on both sides, and is one behaviour.** Which block somebody is looking
+at exists only on their own machine, so `/witchlight mark` sends that machine a
+`MarkNudge` and the client answers it exactly as the key does, rather than the
+server answering a poorer version of the question from where the player happens to
+be standing. A player without this mod's client half hears nothing back, which the
+server cannot tell from a client that answered — so what the command says is what
+it actually did, which is the asking.
+
+It is also a key. **Create from Witchlight preset** is registered under the
+character controls, bound to `[` until somebody rebinds it, and reaches the same
+one function. All three are worth having: the key is the one to use, the slash is
+the one anybody types first, and the dot is the one that works when the server has
+an older mod.
 
 `status` is the first thing to look at when the map looks wrong. `palette: from
 server` against `from client` says which machine's assets the colours came from,

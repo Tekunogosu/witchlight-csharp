@@ -8,6 +8,103 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.28.1
+
+**Deploy note:** the mod half only; the service stays at 0.28.0. Nothing is
+cleared. A server that already has a good palette and its marker pictures behaves
+exactly as before.
+
+**Nobody was ever asked for a palette, on any server.** `OpenTheMap` built the
+palette exchange from a field four lines before the method that fills it ran, so
+the exchange was built against a null every time and `_palettes?.AskIfNeeded` did
+nothing — silently, because of the `?.`. A server whose own assets cannot colour
+the map therefore drew nothing for ever: no ask on join, `/witchlight palette`
+accepting the command and doing nothing, and `/witchlight status` reporting
+`palette: not built yet` with `wanted: nothing, the palette is good enough`. The
+value is handed back from the method that settles it now rather than left in a
+field, because a value that is returned cannot be read early.
+
+**A server whose admin never joins in game now gets a map.** The palette and the
+marker pictures were asked of admins alone, which is the right instinct and the
+wrong rule. A dedicated server is run from a console and the person who runs it
+may never have a character on it; the role a joining player gets by default is
+`suplayer`, which carries no `controlserver`. So a server set up and left to its
+players drew almost nothing — near-zero palette coverage — and every marker on the
+web map as a plain diamond, with nothing anywhere saying why.
+
+**Anybody may fill in what is missing; only an admin may replace what is there.**
+The two cases are not the same risk, which is what the rule turns on: a colour or
+a picture laid where there is none can only improve on nothing, and one laid over
+what somebody chose is a change to what is already right. An admin's palette is
+preferred over what is stored, anybody else's is merged as filler, and a
+non-admin's marker pictures are filtered to names the server has no file for.
+`/witchlight palette` and `/witchlight icons` are the way back either way.
+
+**The bounds that "only an admin can reach it" used to supply are now written
+down.** A palette slice naming a part outside its own total, or claiming more
+parts than this server's block registry could produce, ends the whole attempt
+rather than that one packet — a client claiming a million parts and streaming them
+would otherwise have grown the server until it died. A half-sent palette is
+dropped when its sender disconnects, and marker pictures from a non-admin stop at
+512 files, which is well past a heavy mod set and well short of a disk.
+
+**A palette that cannot be read now says so.** `Palette.Read` swallowed every
+failure and answered null, which the caller cannot tell from "there is no palette
+yet" — and the two have opposite consequences: one is a fresh map, the other is a
+map's colours being thrown away and replaced by the server's own empty set. The
+warning that reports lost colours is guarded on there having been a palette to
+lose, so that path said nothing at all. It is the only way a good palette is lost
+without the block registry having moved.
+
+**Singleplayer was never affected and still is not.** The game forces a
+single-player client to the highest-privilege role on every join, whatever is
+stored against that uid, so the player is always an admin there.
+
+## 0.28.0
+
+**Deploy note: both halves.** Minor is the compatibility generation and it moves
+together, so the service goes up with the mod. Nothing is cleared and no map is
+rebuilt. A **new key** appears in the controls settings — *Create from Witchlight
+preset*, bound to `[` — and takes that binding from anything else the operator's
+players had put there.
+
+**A marker can be made without leaving the game.** *Create from Witchlight
+preset*, or `/wl mark`, marks what a player is looking at the way they have said
+that kind of thing is marked: the server reads the block at the spot, asks the map
+service for that player's presets, and makes the marker from the one whose pattern
+names it. One press, and a line of chat saying what was marked and who can see it.
+
+**Where no preset answers, a window opens with the answer half filled in.** It
+carries the game's own colours and pictures, read off the waypoint layer, and the
+two things the game has no idea about: who may see the marker, and whether this is
+what that block starts as from now on. Both start where that person set them on
+the map, so somebody whose new markers are private gets a private one without
+saying so again. Saving makes the marker and, where the second is on, keeps the
+preset on the map service — which is the first time a preset can be made from
+inside the game at all.
+
+**Every decision about a mark is the server's.** It reads the block at the
+position itself rather than taking a code from a client, since the code is what
+picks the preset and a client that could name the block could apply somebody
+else's preset to somebody's own marker.
+
+**`mark` answers to a slash and a dot, and is one behaviour.** Which block
+somebody is looking at exists only on their own machine, so the server's copy of
+the command asks that machine rather than answering a poorer version of the
+question from where the player happens to be standing.
+
+**Markers can be deleted from the map.** The form that changes one now has a bin
+beside its Cancel, which asks once and does it on the second press. Only its owner
+may: `public_markers_editable` lets somebody correct a marker they can see, which
+is not the same permission as taking it off the map of the person who made it, and
+that is decided here against the waypoint itself.
+
+**Making sure an owner sees a change has one answer.** Changing a marker took the
+waypoint out of the layer's list and put it back, because adding one is what makes
+the layer resend a player's set; removing one had no such trick available. Both go
+through the call the layer makes when a map view moves, which is what has happened
+as far as the client is concerned.
+
 ## 0.27.1
 
 **Deploy note:** the mod half only; the service stays at 0.27.0. Nothing is

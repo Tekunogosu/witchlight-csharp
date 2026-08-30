@@ -41,10 +41,6 @@ public partial class WitchlightSystem : ModSystem
 
     private Exporter? _exporter;
 
-    /// <summary>What the palette build at asset load settled on, for the asking
-    /// half that cannot exist until the server is up.</summary>
-    private PaletteExchange.Built? _built;
-
     /// <summary>The palette as the assets gave it, before there was anywhere to
     /// put it. Read while block textures are still in memory; written once the
     /// world has said which directory its map is in.</summary>
@@ -101,15 +97,27 @@ public partial class WitchlightSystem : ModSystem
 
         ClearWhatThisBuildCannotRead(api);
 
-        _icons = new IconExchange(api, Settings.Exports);
-        if (_built is { } built)
+        // What the assets said comes first, and the exchange is built from what it
+        // hands back rather than from a field it fills. The two used to be a field
+        // written here and read four lines above: the palette exchange was built
+        // against a null every time, so nobody was ever asked for a palette and
+        // every server whose own assets could not colour the map drew nothing,
+        // for ever, in silence.
+        var settled = WriteWhatTheAssetsSaid(api);
+        if (settled is { } built)
         {
             _palettes = new PaletteExchange(api, Settings.Exports, built);
         }
+        else
+        {
+            api.Logger.Error(
+                "[witchlight] no palette was settled, so nobody can be asked for one and the map "
+                + "will draw nothing. This is a bug in this mod.");
+        }
+
+        _icons = new IconExchange(api, Settings.Exports);
         _portraits = new PortraitExchange(api, Settings.Exports);
         _service = new MapService(Settings.Exports, api.Logger);
-
-        WriteWhatTheAssetsSaid(api);
     }
 
     /// <summary>Running one piece of work, and never letting it out.</summary>
@@ -127,7 +135,12 @@ public partial class WitchlightSystem : ModSystem
             .SetMessageHandler<IconTable>((player, table) =>
                 Doing("taking marker pictures", () => _icons?.Accept(player, table)))
             .SetMessageHandler<PlayerPortrait>((player, png) =>
-                Doing("taking a portrait", () => _portraits?.Accept(player, png)));
+                Doing("taking a portrait", () => _portraits?.Accept(player, png)))
+            // A marker asked for from in game. Not answered here: what it becomes
+            // depends on what the map service holds for that player, which is a
+            // round trip and does not belong on the packet thread.
+            .SetMessageHandler<MarkAsk>((player, ask) =>
+                Doing("taking a marker from a player", () => Mark(player, ask)));
 
         // `PlayerNowPlaying` is the earliest moment a player can be sent
         // anything: their client is loaded and in the world. The map's address is
@@ -164,6 +177,12 @@ public partial class WitchlightSystem : ModSystem
             {
                 _greeted.Remove(player.PlayerUID);
             }
+
+            // A palette arrives in slices and is held until the set is complete,
+            // so one that never completes would sit in memory for the life of the
+            // server. Anybody can be asked for one now, which makes a half-sent
+            // set an ordinary event rather than an admin's misfortune.
+            _palettes?.Forget(player.PlayerUID);
         };
 
         // The server marks a chunk dirty for every block that moves in it and for
@@ -363,19 +382,85 @@ public partial class WitchlightSystem : ModSystem
             api.Event.EnqueueMainThreadTask(
                 () => Doing("making markers", () =>
                 {
-                    var (made, changed) = Pending.Apply(api, _visibility, held);
-                    if (made == 0 && changed == 0)
+                    var landed = Pending.Apply(api, _visibility, held);
+                    if (!landed.Anything)
                     {
                         return;
                     }
 
                     api.Logger.Notification(
-                        "[witchlight] web map: {0} marker(s) made, {1} changed", made, changed);
+                        "[witchlight] web map: {0} marker(s) made, {1} changed, {2} deleted",
+                        landed.Made, landed.Changed, landed.Removed);
                     SharedServer.SendToAll(api, _visibility);
                     service.Markers(MarkerFeed.Json(api, _visibility));
                 }),
                 "witchlight-markers");
         });
+    }
+
+    /// <summary>
+    /// Makes a marker one of this server's players asked for from in game.
+    ///
+    /// Three things have to happen in three places, which is the whole shape of
+    /// this. The block at the spot can only be read on the game thread. What that
+    /// player has kept can only be asked of the map service, which is a round
+    /// trip. And the waypoint can only be made on the game thread again. So it
+    /// goes out and comes back, exactly as collecting the web's markers does.
+    ///
+    /// Everything the answer contains is decided in <see cref="Marking"/>; what
+    /// is here is which thread each part runs on and what else has to be told.
+    /// </summary>
+    private void Mark(IServerPlayer player, MarkAsk ask)
+    {
+        if (_sapi is not { } api || _service is not { } service)
+        {
+            return;
+        }
+
+        var block = Marking.BlockAt(api, ask);
+        _ = Task.Run(async () =>
+        {
+            var person = await Presets.Of(service, player.PlayerUID, api.Logger)
+                .ConfigureAwait(false);
+
+            api.Event.EnqueueMainThreadTask(
+                () => Doing("marking from the game", () => Marked(player, ask, person, block)),
+                "witchlight-mark");
+        });
+    }
+
+    /// <summary>
+    /// The half of a mark that has to be on the game thread: the waypoint, the
+    /// decision about who sees it, and telling everything that shows markers.
+    /// </summary>
+    private void Marked(
+        IServerPlayer player, MarkAsk ask, Person person, (string Code, string Name) block)
+    {
+        if (_sapi is not { } api || _service is not { } service)
+        {
+            return;
+        }
+
+        var reply = Marking.Answer(api, _visibility, player, ask, person, block);
+        api.Network.GetChannel(Channel.Name).SendPacket(reply, player);
+        if (!reply.Made)
+        {
+            return;
+        }
+
+        // Straight back out rather than on the slow timer: the person who made it
+        // is standing there, and everybody else's map should have it before they
+        // walk away from the spot.
+        SharedServer.SendToAll(api, _visibility);
+        service.Markers(MarkerFeed.Json(api, _visibility));
+
+        // The preset is the map service's to keep, so it goes off the game thread
+        // and nothing waits on it. A marker that landed must not be undone by a
+        // service that would not take the preset beside it.
+        if (Marking.Keeping(ask, reply, block) is { } preset)
+        {
+            _ = Task.Run(() => Presets.Keep(service, player.PlayerUID, preset, api.Logger));
+        }
     }
 
     /// <summary>

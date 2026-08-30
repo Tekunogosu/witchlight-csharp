@@ -15,8 +15,18 @@ namespace Witchlight;
 ///
 /// So this is a negotiation rather than a build: the server builds what it can at
 /// asset load, keeps whatever a previous run or a client left that still matches
-/// its registry, and asks one admin for the rest. Everything that decides when to
+/// its registry, and asks a player for the rest. Everything that decides when to
 /// ask, whom to ask, and what to do with an answer is here.
+///
+/// **Anybody may fill in what is missing; only an admin may replace what is
+/// there.** It used to be admins alone, which is the right instinct — a palette
+/// decides what every block on the map looks like and arrives from a machine the
+/// server does not control — and the wrong rule, because a server whose operator
+/// never joins in game has no map at all. What settles it is that the two cases
+/// are not the same risk: a colour laid over a block that has none can only
+/// improve on nothing, and one laid over a colour somebody chose is a change to
+/// what is already right. So a player's palette is merged as filler, an admin's
+/// is preferred, and `/witchlight palette` is the way back either way.
 /// </summary>
 public sealed class PaletteExchange
 {
@@ -49,6 +59,17 @@ public sealed class PaletteExchange
     /// <summary>Palette slices in flight, by the player sending them.</summary>
     private readonly Dictionary<string, List<PaletteTable>> _incoming = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The most slices one palette can honestly be on this server.
+    ///
+    /// A slice carries a fixed number of blocks and this server has only so many,
+    /// so anything past this is not a palette. It matters because the sender no
+    /// longer has to be an admin: a client claiming a million parts and streaming
+    /// them would otherwise grow this process until it died, and "only admins can
+    /// reach it" was the whole of what stopped that before.
+    /// </summary>
+    private readonly int _mostSlices;
+
     private string? _askedUid;
     private DateTime _askedAt = DateTime.MinValue;
 
@@ -58,6 +79,7 @@ public sealed class PaletteExchange
         _exports = exports;
         Fingerprint = built.Fingerprint;
         Wanted = built.Wanted;
+        _mostSlices = built.Palette.Blocks.Count / PaletteTable.SliceSize + 2;
     }
 
     /// <summary>What this server's block registry hashes to.</summary>
@@ -97,7 +119,7 @@ public sealed class PaletteExchange
         var (built, report) = (raw.Palette, raw.Report);
 
         var path = Palette.PathIn(exports);
-        var existing = Palette.Read(path);
+        var existing = Palette.Read(path, api.Logger);
 
         // A stored colour is keyed on a block id, so the fingerprint — which is
         // the block registry and nothing else — is the whole of whether those
@@ -140,16 +162,20 @@ public sealed class PaletteExchange
     }
 
     /// <summary>
-    /// Asks one admin for a palette, when the server could not build a usable one.
+    /// Asks a player for a palette, when the server could not build a usable one.
     ///
-    /// Only an admin is asked: a palette decides what every block on the map looks
-    /// like, and it arrives from a machine the server does not control. One at a
-    /// time, because the table is a few hundred kilobytes and every copy after the
-    /// first is thrown away.
+    /// Anybody is asked, not only an admin. A server whose operator never joins in
+    /// game is otherwise a server with no map, and that is the ordinary shape of a
+    /// dedicated server: it is run from a console, and the person who runs it may
+    /// never have a character on it. What guards the map is not who is asked but
+    /// what is done with the answer — see <see cref="Accept"/>.
+    ///
+    /// One at a time, because the table is a few hundred kilobytes and every copy
+    /// after the first is thrown away.
     /// </summary>
     public void AskIfNeeded(IServerPlayer player)
     {
-        if (!Wanted || !player.HasPrivilege(Privilege.controlserver))
+        if (!Wanted)
         {
             return;
         }
@@ -199,19 +225,23 @@ public sealed class PaletteExchange
     }
 
     /// <summary>
-    /// Takes a palette slice from an admin's client, and keeps whatever the whole
-    /// of it adds.
+    /// Takes a palette slice from a client, and keeps whatever the whole of it
+    /// adds.
     ///
     /// Merged rather than replaced: a client only has textures for the mods it has
-    /// installed, so two admins with different mod sets between them can produce a
-    /// complete palette where neither could alone.
+    /// installed, so two players with different mod sets between them can produce
+    /// a complete palette where neither could alone.
+    ///
+    /// **Whose colours win depends on who sent them.** An admin's palette is
+    /// preferred over what is stored, because an admin correcting the map is the
+    /// whole reason `/witchlight palette` exists. Anybody else's is filler: it
+    /// colours blocks that have no colour and leaves every colour already chosen
+    /// alone, so a player cannot repaint a map somebody set up.
     /// </summary>
     public void Accept(IServerPlayer player, PaletteTable table)
     {
-        if (!player.HasPrivilege(Privilege.controlserver))
+        if (!Sane(player, table))
         {
-            _api.Logger.Warning(
-                "[witchlight] ignored a palette from {0}, who is not an admin", player.PlayerName);
             return;
         }
 
@@ -234,33 +264,78 @@ public sealed class PaletteExchange
         slices.RemoveAll(existing => existing.Part == table.Part);
         slices.Add(table);
 
-        if (table.Parts <= 0 || slices.Count < table.Parts)
+        if (slices.Count < table.Parts)
         {
             return;
         }
 
         _incoming.Remove(player.PlayerUID);
 
+        var trusted = player.HasPrivilege(Privilege.controlserver);
         var path = Palette.PathIn(_exports);
         var supplied = PaletteTable.Assemble(slices, id => _api.World.GetBlock(id)?.Code?.ToString());
-        var existing = Palette.Read(path);
+        var existing = Palette.Read(path, _api.Logger);
         var merged = existing is not null && existing.Fingerprint == Fingerprint
-            ? Palette.Merge(supplied, existing)
+            // An admin's colours win; anybody else's only fill the gaps.
+            ? (trusted ? Palette.Merge(supplied, existing) : Palette.Merge(existing, supplied))
             : supplied;
+
+        // Said as it is, whichever way round the merge went: what a reader of
+        // `status` wants to know is whether these colours came off a client's
+        // assets, and after either merge they did.
+        merged.Source = supplied.Source;
 
         var written = merged.Write(path);
         Wanted = merged.Coverage < RequiredCoverage;
         _askedUid = null;
 
         _api.Logger.Notification(
-            "[witchlight] palette from {0}: {1} of {2} blocks coloured ({3:P0}){4}{5}",
+            "[witchlight] palette from {0}{1}: {2} of {3} blocks coloured ({4:P0}){5}{6}",
             player.PlayerName,
+            trusted ? "" : " (not an admin, so it only filled gaps)",
             merged.Coloured,
             merged.Textured,
             merged.Coverage,
             written ? "" : ", unchanged — the map was not redrawn",
             Wanted ? ", still incomplete" : "");
     }
+
+    /// <summary>
+    /// Whether this slice could be part of a palette for this server at all.
+    ///
+    /// Its own check because the sender no longer has to be an admin. A part
+    /// outside its own total, a total larger than this server's registry could
+    /// produce, or more slices held than that total allows are each a client
+    /// growing this process rather than sending a palette, and each ends the
+    /// whole attempt rather than only that packet.
+    /// </summary>
+    private bool Sane(IServerPlayer player, PaletteTable table)
+    {
+        var held = _incoming.TryGetValue(player.PlayerUID, out var slices) ? slices.Count : 0;
+        if (table.Parts > 0
+            && table.Parts <= _mostSlices
+            && table.Part >= 0
+            && table.Part < table.Parts
+            && held < _mostSlices)
+        {
+            return true;
+        }
+
+        _incoming.Remove(player.PlayerUID);
+        _api.Logger.Warning(
+            "[witchlight] dropped a palette from {0}: part {1} of {2} is not one this server "
+            + "could have asked for (at most {3} parts)",
+            player.PlayerName, table.Part, table.Parts, _mostSlices);
+        return false;
+    }
+
+    /// <summary>
+    /// Forgets a half-sent palette, because the player sending it has gone.
+    ///
+    /// Slices are held until the set is complete, and a set that never completes
+    /// would otherwise sit in memory for the life of the server.
+    /// </summary>
+    public void Forget(string uid) => _incoming.Remove(uid);
 
     /// <summary>
     /// One line for `/witchlight status`.
@@ -272,7 +347,7 @@ public sealed class PaletteExchange
     /// </summary>
     public string Describe()
     {
-        if (Palette.Read(Palette.PathIn(_exports)) is not { } palette)
+        if (Palette.Read(Palette.PathIn(_exports), _api.Logger) is not { } palette)
         {
             return $"palette: none written yet, for registry {Fingerprint}";
         }
@@ -311,7 +386,7 @@ public sealed class PaletteExchange
             api.Logger.Warning(
                 "[witchlight] the block registry changed, so the stored palette's {0} colours no "
                 + "longer match this world's block ids and have been replaced by this server's "
-                + "own ({1} colours). The map draws nothing until an admin joins and supplies one.",
+                + "own ({1} colours). The map draws nothing until a player joins and supplies one.",
                 existing.Coloured,
                 palette.Coloured);
         }
@@ -319,7 +394,7 @@ public sealed class PaletteExchange
         if (wanted)
         {
             api.Logger.Notification(
-                "[witchlight] only {0:P0} of blocks have a colour — an admin will be asked for a palette on join",
+                "[witchlight] only {0:P0} of blocks have a colour — the next player to join will be asked for a palette",
                 palette.Coverage);
         }
 

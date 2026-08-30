@@ -66,11 +66,36 @@ public class Wanted
     private const int LongestTitle = 128;
 }
 
+/// <summary>
+/// One marker somebody asked to be taken away.
+///
+/// A key and whose ask it was, and nothing else: a removal names a waypoint
+/// rather than describing one, and the waypoint itself is what this side reads
+/// before removing anything.
+/// </summary>
+public class Unwanted
+{
+    /// <summary>The guid of the waypoint to take away.</summary>
+    public string Key { get; set; } = "";
+
+    /// <summary>Who asked. The service took this from their session.</summary>
+    public string Uid { get; set; } = "";
+}
+
 /// <summary>Everything the service was holding when the mod last asked.</summary>
 public class Asked
 {
     public List<Wanted> Make { get; set; } = new();
     public List<Wanted> Change { get; set; } = new();
+    public List<Unwanted> Remove { get; set; } = new();
+}
+
+/// <summary>How many of each kind of ask landed. Its own type rather than three
+///  numbers in a tuple, because the caller says all three out loud.</summary>
+public readonly record struct Landed(int Made, int Changed, int Removed)
+{
+    /// <summary>Whether anything happened at all.</summary>
+    public bool Anything => Made > 0 || Changed > 0 || Removed > 0;
 }
 
 /// <summary>
@@ -87,14 +112,15 @@ public class Asked
 public static class Pending
 {
     /// <summary>
-    /// Makes and changes every marker in the service's reply, and records what
-    /// each owner chose about who may see it. Gives back how many of each landed.
+    /// Makes, changes and removes every marker in the service's reply, and
+    /// records what each owner chose about who may see it. Gives back how many
+    /// of each landed.
     /// </summary>
-    public static (int Made, int Changed) Apply(ICoreServerAPI api, Visibility visibility, string? json)
+    public static Landed Apply(ICoreServerAPI api, Visibility visibility, string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            return (0, 0);
+            return default;
         }
 
         Asked? asked;
@@ -105,15 +131,54 @@ public static class Pending
         catch (Exception error)
         {
             api.Logger.Warning("[witchlight] could not read the markers the map is holding: {0}", error.Message);
-            return (0, 0);
+            return default;
         }
 
         if (asked is null)
         {
-            return (0, 0);
+            return default;
         }
 
-        return (Made(api, visibility, asked.Make), Changed(api, visibility, asked.Change));
+        return new Landed(
+            Made(api, visibility, asked.Make),
+            Changed(api, visibility, asked.Change),
+            Removed(api, asked.Remove));
+    }
+
+    /// <summary>
+    /// Markers somebody asked to be taken away.
+    ///
+    /// Whether they may is decided here and only here, against the waypoint
+    /// itself, and only its owner ever may — see <see cref="Markers.Remove"/>.
+    /// A marker that is already gone is not a failure worth a line in the log:
+    /// two browsers open on one marker is two asks for the same removal.
+    /// </summary>
+    private static int Removed(ICoreServerAPI api, List<Unwanted> asked)
+    {
+        var removed = 0;
+        foreach (var gone in asked)
+        {
+            if (gone is null || string.IsNullOrEmpty(gone.Key) || string.IsNullOrEmpty(gone.Uid))
+            {
+                continue;
+            }
+
+            var waypoint = Markers.ByGuid(api, gone.Key);
+            if (waypoint is null)
+            {
+                continue;
+            }
+
+            if (!Markers.Remove(api, waypoint, gone.Uid))
+            {
+                api.Logger.Notification(
+                    "[witchlight] {0} may not delete the marker \"{1}\"", gone.Uid, waypoint.Title);
+                continue;
+            }
+            removed++;
+        }
+
+        return removed;
     }
 
     /// <summary>New markers, each owned by whoever the service says asked for it.</summary>

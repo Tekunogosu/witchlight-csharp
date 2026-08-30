@@ -4,7 +4,9 @@ using ProtoBuf;
 
 namespace Witchlight;
 
-/// <summary>Sent to one admin when the server has no marker pictures of its own.</summary>
+/// <summary>Sent on join, carrying what the server already has, so a client
+///  answers with only the pictures it is missing — and with nothing at all once
+///  the set is complete.</summary>
 [ProtoContract]
 public class IconRequest
 {
