@@ -199,6 +199,16 @@ public static class ColumnPump
                 continue;
             }
 
+            if (!Readable(api, cx, cz, edge, mapChunk))
+            {
+                // The heightmap is here and the blocks are not, which reads as a
+                // chunk of air rather than as an absence. Held with the ones that
+                // were not there at all: both are answered by the chunk being
+                // marked dirty again when it next loads.
+                unloaded.Add((cx, cz));
+                continue;
+            }
+
             Read(api, cx, cz, edge, mapChunk, surface, shows, chiselled);
             var record = surface.Record();
             reread++;
@@ -221,6 +231,41 @@ public static class ColumnPump
             Unloaded = unloaded,
             Unready = unready,
         };
+    }
+
+    /// <summary>
+    /// Whether the blocks are there to be read, and not only the record of where
+    /// their surface is.
+    ///
+    /// A map chunk is the flat, two-dimensional record a column keeps — its
+    /// heightmaps, its climate — and the server holds those long after it has let
+    /// go of the blocks underneath them. So <see cref="IWorldManagerAPI.GetMapChunk"/>
+    /// answering is not the blocks being loaded, and the block accessor answers
+    /// zero for every position in a chunk whose blocks are gone.
+    ///
+    /// Nothing about that reads as a failure further down. The scan finds nothing
+    /// that shows all the way to the bottom of the world, records air at the
+    /// height the map chunk claims, and the renderer paints a flat brown square —
+    /// one per chunk, chunk-aligned, in the middle of finished terrain, and
+    /// stored, so it stays until something marks that chunk dirty again.
+    ///
+    /// The vertical chunk holding the highest ground in this column is the one
+    /// that has to be there: it is where the scan starts and, on ordinary
+    /// terrain, where it stops.
+    /// </summary>
+    private static bool Readable(
+        ICoreServerAPI api, int chunkX, int chunkZ, int edge, IMapChunk mapChunk)
+    {
+        var top = 0;
+        foreach (var height in mapChunk.RainHeightMap)
+        {
+            if (height > top)
+            {
+                top = height;
+            }
+        }
+
+        return api.WorldManager.GetChunk(chunkX, top / edge, chunkZ) is not null;
     }
 
     /// <summary>

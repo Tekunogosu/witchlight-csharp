@@ -39,12 +39,30 @@ public static class Presets
     /// <summary>
     /// Keeps one preset, and gives back everything that player has set once it
     /// has landed. Null where the service would not take it.
+    ///
+    /// Said out loud either way. Nothing waits on this — a marker that landed
+    /// must not be undone by a service that would not take the preset beside it —
+    /// so the log is the only thing that can report it, and a preset that
+    /// silently failed to be kept is a person pressing the same switch again
+    /// tomorrow.
     /// </summary>
     public static async Task<Person?> Keep(
         MapService service, string uid, Preset preset, ILogger log)
     {
         var body = await service.KeepPreset(uid, preset).ConfigureAwait(false);
-        return Read(body, log);
+        var kept = Read(body, log);
+        if (kept is null)
+        {
+            log.Warning(
+                "[witchlight] the map would not keep the preset for {0}", preset.Pattern);
+        }
+        else
+        {
+            log.Notification(
+                "[witchlight] kept a preset for {0}; that player now has {1}",
+                preset.Pattern, kept.Presets.Count);
+        }
+        return kept;
     }
 
     /// <summary>The first preset whose pattern names this block, or nothing.</summary>

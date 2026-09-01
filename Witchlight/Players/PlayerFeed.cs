@@ -222,11 +222,45 @@ public static class PlayerFeed
             var held = new HashSet<int>();
             foreach (var membership in player!.Groups ?? Array.Empty<PlayerGroupMembership>())
             {
-                held.Add(membership.GroupUid);
+                if (Joined(api, membership.GroupUid))
+                {
+                    held.Add(membership.GroupUid);
+                }
             }
             groups[uid] = held;
         }
         return groups;
+    }
+
+    /// <summary>
+    /// Whether a membership is in a group somebody actually joined.
+    ///
+    /// A player's memberships are not only the groups they joined. The game puts
+    /// every player in its own channels — general chat, server info, the damage
+    /// and info logs — and those arrive here as memberships like any other. Every
+    /// pair of players on the server therefore shares one, which made "my group"
+    /// on the map the whole server: the tab that exists to show a smaller list
+    /// showed the same list as the one beside it, on every server that had never
+    /// created a group at all.
+    ///
+    /// So a membership counts when the server can name a player group behind it.
+    /// The channels have none, being the game's own and not anybody's. Read from
+    /// the server's own list rather than by refusing the uids those channels
+    /// happen to use, because a rule about which numbers are real is a rule that
+    /// goes wrong quietly the day the game adds a channel.
+    ///
+    /// A group the game made to carry a private message is a real group and is
+    /// still not one of these. It is two people talking, and a map that read it
+    /// as a party would put whoever you last messaged on your group list and
+    /// leave them there.
+    /// </summary>
+    private static bool Joined(ICoreServerAPI api, int group)
+    {
+        var known = api.Groups?.PlayerGroupsById;
+        return known is not null
+            && known.TryGetValue(group, out var joined)
+            && joined is not null
+            && !joined.CreatedByPrivateMessage;
     }
 
     /// <summary>

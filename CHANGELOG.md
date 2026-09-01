@@ -13,6 +13,52 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.39.1
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited. A server that has never made a player group will find its map's
+group tab holding one person rather than everybody, which is what it always meant
+to say.
+
+**"My group" on the map is the group, not the server.** A player's memberships
+are not only the groups they joined: the game puts everybody in its own channels
+— general chat, server info, the damage and info logs — and those arrive as
+memberships like any other. Every pair of players therefore shared one, so the
+map's group tab listed the whole server and was the same list as the tab beside
+it. A membership now counts only where the server can name a player group behind
+it, read off the server's own list rather than by refusing the numbers those
+channels happen to use. A group the game made to carry a private message is a
+real group and still not one of these: it is two people talking, and a map that
+read it as a party would put whoever you last messaged on your group list and
+leave them there.
+
+## 0.39.0
+
+Moved for the map service, which gained a `live_refresh_ms` setting for how often
+the page asks where everybody is. Nothing here changed, and nothing in this half
+reads it: the beat is the page's.
+
+## 0.38.1
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited. Chunks already exported as flat brown squares repair themselves
+the next time they load.
+
+**A chunk is not exported until its blocks are there to read.** A map chunk is
+the flat record a column keeps — its heightmaps, its climate — and the server
+holds one long after it has let go of the blocks underneath it. `GetMapChunk`
+answering was taken as the chunk being loaded, so a chunk marked dirty and
+exported in that window read as air at every position, was recorded as air at the
+height its own heightmap claimed, and was drawn as a flat brown square, chunk
+aligned, in the middle of finished terrain. It stayed, because a stored record is
+only replaced when the chunk is read again.
+
+**A preset that could not be kept says so.** Nothing waits on keeping one — a
+marker that landed must not be undone by a service that would not take the preset
+beside it — so the log was the only thing that could report it, and it reported
+nothing at all. It now says which pattern was kept, and how many that player then
+has, or that the map would not take it.
+
 ## 0.38.0
 
 **Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
