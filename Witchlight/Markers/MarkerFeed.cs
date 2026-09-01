@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
 using Vintagestory.API.Server;
+using Vintagestory.GameContent;
 
 namespace Witchlight;
 
@@ -24,7 +25,13 @@ public class LiveWaypoint
     /// </summary>
     public string OwnerUid { get; set; } = "";
 
-    public bool Pinned { get; set; }
+    /// <summary>
+    /// The block this marker was put on — <c>game:rock-granite</c> — or empty
+    /// where the mod has no record of it, which is every marker made before it
+    /// kept one. What a preset made from this marker is keyed on. See
+    /// <see cref="Origins"/>.
+    /// </summary>
+    public string Block { get; set; } = "";
 
     /// <summary>
     /// What names this marker wherever it goes. A browser that asked for one
@@ -62,7 +69,15 @@ public class LiveMarkers
     /// <summary>Markers only their owner may see, by the uid of that owner.</summary>
     public Dictionary<string, List<LiveWaypoint>> Private { get; set; } = new();
 
-
+    /// <summary>
+    /// Which markers each person keeps in sight on their own map, by their uid.
+    ///
+    /// Sorted by reader for the reason the private markers are: a pin is one
+    /// person's answer about one marker, and the service hands each of them their
+    /// own rather than being asked to work out whose is whose. See
+    /// <see cref="Pins"/>, which is the one place that knows.
+    /// </summary>
+    public Dictionary<string, List<string>> Pins { get; set; } = new();
 }
 
 /// <summary>
@@ -76,9 +91,10 @@ public class LiveMarkers
 public static class MarkerFeed
 {
     /// <summary>Every marker, sorted by who may see it, as the service wants it.</summary>
-    public static string Json(ICoreServerAPI api, Visibility visibility)
+    public static string Json(
+        ICoreServerAPI api, Visibility visibility, Pins pins, Origins origins)
     {
-        return JsonConvert.SerializeObject(Sorted(api, visibility));
+        return JsonConvert.SerializeObject(Sorted(api, visibility, pins, origins));
     }
 
     /// <summary>
@@ -91,10 +107,19 @@ public static class MarkerFeed
     /// that restarted has the palette back on the next post instead of needing to
     /// be told separately that it lost it.
     /// </summary>
-    public static LiveMarkers Sorted(ICoreServerAPI api, Visibility visibility)
+    public static LiveMarkers Sorted(
+        ICoreServerAPI api, Visibility visibility, Pins pins, Origins origins)
     {
-        var sorted = new LiveMarkers { Colors = Markers.Palette(api) };
-        foreach (var marker in All(api, visibility))
+        // One snapshot of the list, taken the way `All` takes its own: the pins are
+        // read off the same waypoints the markers are, and a list being iterated
+        // while the game adds to it is the one thing that can go wrong here.
+        var alive = Markers.Layer(api)?.Waypoints?.ToList() ?? new List<Waypoint>();
+        var sorted = new LiveMarkers
+        {
+            Colors = Markers.Palette(api),
+            Pins = pins.Everyones(alive),
+        };
+        foreach (var marker in All(api, visibility, origins))
         {
             if (!marker.Private)
             {
@@ -127,7 +152,8 @@ public static class MarkerFeed
     /// reports how many there are: an empty map with a working service is either
     /// no markers or no post, and those need telling apart.
     /// </summary>
-    public static List<LiveWaypoint> All(ICoreServerAPI api, Visibility visibility)
+    public static List<LiveWaypoint> All(
+        ICoreServerAPI api, Visibility visibility, Origins origins)
     {
         var layer = Markers.Layer(api);
         if (layer?.Waypoints is null)
@@ -158,7 +184,7 @@ public static class MarkerFeed
                 Z = Blocks.At(waypoint.Position.Z),
                 Owner = Markers.OwnerName(api, waypoint.OwningPlayerUid),
                 OwnerUid = waypoint.OwningPlayerUid ?? "",
-                Pinned = waypoint.Pinned,
+                Block = origins.Of(waypoint.Guid),
                 Key = Markers.Key(waypoint),
                 Private = visibility.IsPrivate(waypoint, byDefault),
             });

@@ -78,6 +78,8 @@ What it changes, and the two addresses a session comes and goes by:
 | `POST /markers` | asks the game to make a marker | `202` and the name it will have |
 | `PUT /markers/{key}` | asks the game to change one | `202` and the same name |
 | `DELETE /markers/{key}` | asks the game to take one away | `202` and the same name |
+| `PUT /markers/{key}/pin` | keeps one in sight on this player's own map in game | `202` and the same name |
+| `DELETE /markers/{key}/pin` | stops keeping it | `202` and the same name |
 | `GET /me/preferences.json` | this person's presets and defaults | the whole document |
 | `PUT /me/preferences.json` | replaces them | the document as it was kept |
 | `GET /login?t={word}` | spends a login link and seats the browser | `303` to `/`, with a cookie |
@@ -130,8 +132,9 @@ the west and the one to the north. Those neighbours are in the list already.
               "Portrait":"6164...","PortraitAt":1756315231}],
  "Waypoints":[{"Title":"Forge","Icon":"circle","Color":"#00ff00",
                "X":511810,"Y":110,"Z":511810,"Owner":"ada",
-               "OwnerUid":"...","Pinned":false,
-               "Key":"9e5738f0-…","Private":false}]}
+               "OwnerUid":"...","Block":"game:anvil-copper-north",
+               "Key":"9e5738f0-…","Private":false}],
+ "Pins":["9e5738f0-…"]}
 ```
 
 **Which markers are in it depends on who is asking.** Everyone is sent the ones
@@ -144,6 +147,16 @@ back the ones that apply.
 `Key` is the waypoint's guid, and is how a page that asked for a marker
 recognises it arriving. `Private` says the marker is its owner's alone, so a page
 can show that a choice took.
+
+`Pins` are the markers *this* browser's player keeps in sight on their own map in
+game, by key, and it goes to nobody else: a pin is one person's answer about one
+marker and changes nothing anybody else sees. A browser carrying no session is
+sent an empty list.
+
+`Block` is which block the marker is about — the code of the block the game read
+under it when it was made or last moved, or the pattern of a preset it has since
+been made to look like. It is what a preset made from this marker is keyed on.
+Empty where nothing knows, which is every marker made before the mod kept it.
 
 Served from memory, out of whatever the mod last posted. **Players expire after
 30 seconds** — a game server that stops leaves no dots behind, because a dot
@@ -179,7 +192,7 @@ player who takes a hat off and puts it back gets the same address again.
 
 ```json
 → {"Title":"Forge","Icon":"anvil","Color":"#c8772e","X":511810,"Y":110,"Z":511810,
-   "Private":false}
+   "Private":false,"Block":""}
 ← 202 {"Key":"9e5738f0-303a-673d-a328-f19e0d08e7d1"}
 ```
 
@@ -192,6 +205,12 @@ server — the channel between the halves runs one way — so the marker waits h
 until the mod collects it, which it does every two seconds. `Key` is the guid the
 waypoint will be made under; the page watches `/live.json` for it to appear, which
 is the only honest confirmation there is.
+
+`Block` says which block the marker is about, and is ordinarily empty: the game
+is the half that can read a block, and it does. A page fills it in where it knows
+something this side does not — the block under a right click, or the pattern of a
+preset a screenful of markers has just been made to look like. Empty means "read
+the world", never "forget what was known".
 
 `400` names the field that was wrong, in words meant to be read out. `401` means
 no session. `503` means the queue is full, which is a game server that has stopped
@@ -213,6 +232,30 @@ they can see; that is not the same permission as taking it off the map of the
 person who made it, and the mod decides it against the waypoint itself. A refusal
 therefore shows up as the marker still being there rather than as a status code —
 the same shape every other ask on this port has, and for the same reason.
+
+### `PUT /markers/{key}/pin`, `DELETE /markers/{key}/pin`
+
+```
+← 202 {"Key":"9e5738f0-303a-673d-a328-f19e0d08e7d1"}
+```
+
+No body: keeping a marker in sight names a waypoint rather than describing one,
+and which way it goes is the method. A pinned waypoint is held against the edge
+of the in-game map instead of scrolling off it, which is the game's own flag and
+its own word for it.
+
+**A pin is one person's, never everyone's.** It puts the marker on the pinner's
+map and on nobody else's, so whether they may is whether they may *see* it —
+their own always, and anybody else's while it is public. That is a lower bar than
+changing a marker and deliberately so, and the mod decides it against the
+waypoint itself.
+
+Its own address rather than a field on the marker, because a put on the marker is
+an edit of the marker: a different permission, a different answer, and a change
+everybody sees.
+
+Collected and confirmed like everything else here. The page watches `/live.json`
+for the key to appear in `Pins`.
 
 `401` means no session. `400` means a key this map never handed out. `503` means
 the queue is full.
@@ -332,8 +375,15 @@ waypoint is and the service does not:
 ```json
 {"Colors":["#f9d0dc","…"],
  "Public":[{…}],
- "Private":{"<owner uid>":[{…}]}}
+ "Private":{"<owner uid>":[{…}]},
+ "Pins":{"<player uid>":["9e5738f0-…"]}}
 ```
+
+`Pins` are the markers each player keeps in sight on their own map, sorted by
+reader for the reason the private markers are: the service hands each browser its
+own rather than being asked to work out whose is whose. A player's own pinned
+waypoints are read off the waypoints, where the game keeps that flag; everybody
+else's markers are a decision this mod stores beside the visibility choices.
 
 `Colors` are the colours the game's own waypoint dialog offers, read off the map
 layer so a mod that adds one adds it to the web form too. They ride with the
@@ -341,15 +391,20 @@ markers rather than going on a channel of their own: a few hundred bytes against
 tens of kilobytes, and a service that restarted has them back on the next post
 instead of having to be told separately that it lost them.
 
-`/markers/pending` answers with all three kinds of ask at once:
+`/markers/pending` answers with every kind of ask at once, grouped by what they
+are about:
 
 ```json
-{"Make":[{…}],"Change":[{…}],"Remove":[{"Key":"…","Uid":"…"}]}
+{"Markers":{"Make":[{…}],"Change":[{…}],
+            "Remove":[{"Key":"…","Uid":"…"}],
+            "Pin":[{"Key":"…","Uid":"…","On":true}]},
+ "Claims":{"Make":[{…}],"Change":[{…}],"Remove":[{…}]}}
 ```
 
-A removal carries a key and whose ask it was and nothing else. Every field a
-marker carries would be a field kept in step for a reader that never looks at it,
-and the mod reads the waypoint itself before removing anything.
+A removal carries a key and whose ask it was and nothing else, and a pin carries
+which way it goes as well. Every field a marker carries would be a field kept in
+step for a reader that never looks at it, and the mod reads the waypoint itself
+before it acts on either.
 
 `/markers/pending`, `/auth/mint` and the two preset addresses are the things here
 that answer rather than merely accepting. All of them live on this channel because

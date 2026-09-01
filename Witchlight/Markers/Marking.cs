@@ -29,9 +29,13 @@ public static class Marking
     /// which would be a preset for somebody else's rock applied to somebody's
     /// own marker.
     /// </summary>
-    public static (string Code, string Name) BlockAt(ICoreServerAPI api, MarkAsk ask)
+    public static (string Code, string Name) BlockAt(ICoreServerAPI api, MarkAsk ask) =>
+        BlockAt(api, new BlockPos(ask.BlockX, ask.BlockY, ask.BlockZ));
+
+    /// <summary>What is at one position, and what the game calls it. Air, and a
+    ///  chunk nobody has loaded, are both nothing rather than a name.</summary>
+    public static (string Code, string Name) BlockAt(ICoreServerAPI api, BlockPos at)
     {
-        var at = new BlockPos(ask.BlockX, ask.BlockY, ask.BlockZ);
         var block = api.World.BlockAccessor.GetBlock(at);
         if (block is null || block.Code is null || block.BlockId == 0)
         {
@@ -39,6 +43,21 @@ public static class Marking
         }
 
         return (block.Code.ToString(), block.GetPlacedBlockName(api.World, at) ?? "");
+    }
+
+    /// <summary>
+    /// The block a marker at this place is about.
+    ///
+    /// A marker made on the web is put where somebody clicked on a map drawn from
+    /// above, and what the map drew is the *surface* — so the place the marker
+    /// takes is the standing height and the block it means is under its feet.
+    /// Tried in that order rather than assumed either way, since a marker typed
+    /// into the form can be anywhere at all, a cave floor included.
+    /// </summary>
+    public static string CodeUnder(ICoreServerAPI api, int x, int y, int z)
+    {
+        var here = BlockAt(api, new BlockPos(x, y, z)).Code;
+        return here.Length > 0 ? here : BlockAt(api, new BlockPos(x, y - 1, z)).Code;
     }
 
     /// <summary>
@@ -53,6 +72,7 @@ public static class Marking
     public static MarkReply Answer(
         ICoreServerAPI api,
         Visibility visibility,
+        Origins origins,
         IServerPlayer player,
         MarkAsk ask,
         Person person,
@@ -91,6 +111,10 @@ public static class Marking
         // and somebody who marked something decided — including when they decided
         // to agree with it.
         visibility.Choose(waypoint.Guid, reply.Private == Mark.Private);
+        // The block this was made on, read once while the chunk is in hand. A
+        // preset made from this marker later is keyed on it, and by then the ore
+        // may be mined out and the block something else.
+        origins.Made(waypoint.Guid, block.Code);
         reply.Made = true;
         reply.Said = $"Marked {reply.Title}"
             + (reply.Private == Mark.Private ? " — private." : " — everyone can see it.");

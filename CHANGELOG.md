@@ -13,6 +13,165 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.38.0
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited.
+
+**A marker carries which block it is about.** A waypoint is a place and nothing
+else, so what a marker was put on is a question only this side can answer — and
+only while the chunk is loaded and the block is still what it was. It is read
+under the marker when one is made, read again wherever one moves, and it travels
+with the marker as `Block`, which is what a preset made from that marker is keyed
+on. The map may say it instead, where it knows something this side does not: the
+pattern of a preset a screenful of markers has just been made to look like. An
+empty `Block` on an ask means "read the world", never "forget what was known".
+
+**One store owns what this mod knows about a waypoint that the game does not.**
+`Beside<T>` does the reading, the writing and the forgetting; the visibility
+choices and the blocks are two uses of it. Neither format has changed — a store
+that already exists is read back exactly as it was written.
+
+**`/witchlight status` says how many markers know their block**, beside the
+visibility choices and the pins.
+
+**The in-game marker window reads left to right.** Both switches are before the
+words they answer rather than after them, in one column, and the two ways out
+line up under them. The preset switch says *Set as preset* — it read *Keep as
+what game:rock-granite-\* starts as*, which is a question nobody finishes.
+
+## 0.37.1
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited.
+
+**A marker can be kept in sight on a player's own map.** The game holds a pinned
+waypoint against the edge of the map instead of letting it scroll off, and the
+web map now offers that pin. It is one person's choice about one marker — pinning
+somebody's marker puts it on the pinner's map and on no other — so whether they
+may is whether they may *see* it: their own always, and anybody else's while it
+is public. That is a lower bar than changing a marker and deliberately so.
+
+The answer lives in two halves and one type owns both, because "is this pinned
+for this person" is one question. A player's own marker is answered by the
+waypoint, which is where the game's own map dialog writes it, so pinning from the
+web and pinning in game are the same switch. Everybody else's arrives on a client
+as a temporary waypoint rebuilt from what the server sends, so a flag on it has
+nowhere to live — that half is kept beside the visibility choices, in the
+savegame, and rides the per-player share.
+
+`/witchlight status` says how many pins there are, beside how many markers have a
+chosen visibility.
+
+**The map's asks carry a fourth verb.** `{Markers:{Make,Change,Remove,Pin}}`,
+where a pin is a key, whose ask it was, and which way it goes. A marker carries
+nothing else on it: a pin names a waypoint rather than describing one, and this
+side reads the waypoint itself before it acts.
+
+**A marker no longer says whether its owner pinned it.** That field went out with
+every marker to every reader and answered a question nobody asked — whether *this*
+reader keeps it in sight is what a page wants, and that now travels sorted by
+reader with the markers, the way the private ones already do.
+
+## 0.37.0
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited.
+
+**A claim can be renamed, re-permissioned and given up from the map.** The mod
+takes three asks about claims now rather than one, and every one of them is
+judged the way the game judges its own: a change or a removal is its owner's, or
+somebody holding `commandplayer` — which is what vanilla's `/land adminfree`
+asks of anybody deleting a claim that is not theirs.
+
+**Who a claim lets in travels both ways.** The game's `AllowUseEveryone` and
+`AllowTraverseEveryone`, and the players named on it, go out with the claim so a
+form can show them; names typed into that form are turned into uids here,
+because this is the half that can. A name the server has never seen is dropped
+with a line in the log rather than refusing the whole change — it is a typo in
+one row of a form, and losing the other rows to it would be worse.
+
+**A claim carries a name again.** It is worked out from what the claim is — its
+owner and every corner — because the game gives a claim nothing to be known by,
+and without one "this claim" is a thing only a person looking at a screen can
+mean. A claim whose ground has moved gives a different name, so a page holding a
+stale one is refused rather than quietly editing land it was not looking at.
+
+**What the map asks for now travels grouped by kind.** `{Markers:{Make,Change,
+Remove}, Claims:{Make,Change,Remove}}`, because the two kinds answer the same
+three verbs; flat, it had grown a `Claims` beside a `Make` that only meant
+markers.
+
+## 0.36.2
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared. Packaging on
+a fresh checkout now needs `.env` — `cp .env.example .env` and put the map
+service's repository in it.
+
+**`package.sh` builds both halves.** It built the mod and then looked around for
+a map service binary somebody else had built, which made "one archive, one
+release" true of the version check and not of the build: the check catches a
+version bumped without a rebuild, and nothing could catch a source file edited
+without one. That shipped a stale map service under a version that looked right.
+It now runs `cargo build --release` on the service itself, so the rebuild is not
+something to remember.
+
+**Where that repository is comes from `WITCHLIGHT_SERVICE_REPO`**, in the
+environment or in a `.env` file beside the script — `.env.example` is what it
+should look like, and `.env` is not committed, because a path on one machine is
+not a fact about the project. The two guessed-at paths it used to search are
+gone; one of them had not existed for as long as the build output has been
+somewhere else, and nothing said so.
+
+**Where the binary landed is asked of cargo** rather than assembled from the
+repository's layout, since `CARGO_TARGET_DIR`, a `.cargo/config.toml` and a
+`target` symlink can each send it elsewhere.
+
+## 0.36.1
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared.
+
+Moved for the map service, whose land claim buttons were drawn where nothing
+could click them. This half did not change.
+
+## 0.36.0
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited. A `witchlight.conf` written before this says nothing about
+`[claims]`, and an absent table means the defaults — anybody may see where the
+claims are, and drawing one from the map asks what `/land claim` already asks.
+
+**The web map draws the land claims, and can take one.** Every claim on the
+server goes to the map on the same slow beat the markers do, one shaded rectangle
+per area, with its owner, its description and how far up and down it reaches.
+
+**Who may see them and who may draw one are two settings.** `[claims] view` and
+`[claims] create` in `witchlight.conf`, spelled the way `[commands]` is: `admin`,
+`player`, or any privilege the game knows. `view` starts open because the game
+already sends every claim to every client; `create` starts at `claimland`.
+
+**A claim taken through the map is a claim `/land claim` would have taken.** The
+world's `allowLandClaiming`, the game's own `claimland` privilege, how many claims
+that person may hold, their role's allowance and smallest permitted size, and
+whether the rectangle overlaps anybody — every one of the game's rules is checked
+here, in `Claims/Claiming.cs`, and the map's own setting is asked in addition and
+never instead. A refusal says who and why in the server log.
+
+**Nobody is sent a claim they may not see.** The mod works out who may against
+the stored player data rather than against who is online, so somebody reading the
+map from a browser while their player is offline is answered properly instead of
+being refused for not being in the world.
+
+**`Mod/Permissions.cs` now answers for gates that are not commands.** It was a
+table of command names read out of `[commands]`; each entry now carries the
+settings key it is written under, so the two claim gates are the same question
+answered in the same place rather than a second class with its own idea of what a
+misspelled privilege means. `wl status` prints a line per table.
+
+**`Markers/Pending.cs` is now `Web/Pending.cs`**, because it is no longer about
+markers: one envelope carries everything asked for on the web, and the mod
+collects it on the tick it already had. The route it collects from is `/pending`.
+
 ## 0.35.3
 
 **Deploy note:** both halves, upgraded together. Nothing is cleared. The white

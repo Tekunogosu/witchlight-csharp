@@ -18,7 +18,8 @@ namespace Witchlight;
 /// </summary>
 public static class SharedServer
 {
-    public static SharedMarkers For(ICoreServerAPI api, IServerPlayer player, Visibility visibility)
+    public static SharedMarkers For(
+        ICoreServerAPI api, IServerPlayer player, Visibility visibility, Pins pins)
     {
         var shared = new SharedMarkers();
         var layer = Markers.Layer(api);
@@ -54,22 +55,27 @@ public static class SharedServer
                 Icon = Markers.Picture(waypoint.Icon),
                 Color = waypoint.Color,
                 Owner = Markers.OwnerName(api, waypoint.OwningPlayerUid),
+                // Whether this one player keeps it in sight. Asked per send
+                // rather than per marker, because that is the shape of the
+                // question: a pin is one person's and never everyone's.
+                Pinned = pins.Kept(waypoint, player.PlayerUID),
             });
         }
 
         return shared;
     }
 
-    public static void SendTo(ICoreServerAPI api, IServerPlayer player, Visibility visibility)
+    public static void SendTo(
+        ICoreServerAPI api, IServerPlayer player, Visibility visibility, Pins pins)
     {
-        api.Network.GetChannel(Channel.Name)?.SendPacket(For(api, player, visibility), player);
+        api.Network.GetChannel(Channel.Name)?.SendPacket(For(api, player, visibility, pins), player);
     }
 
-    public static void SendToAll(ICoreServerAPI api, Visibility visibility)
+    public static void SendToAll(ICoreServerAPI api, Visibility visibility, Pins pins)
     {
         foreach (var player in api.World.AllOnlinePlayers.OfType<IServerPlayer>())
         {
-            SendTo(api, player, visibility);
+            SendTo(api, player, visibility, pins);
         }
     }
 }

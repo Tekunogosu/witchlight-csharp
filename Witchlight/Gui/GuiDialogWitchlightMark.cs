@@ -85,6 +85,12 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
         var label = ElementBounds.Fixed(0, 28, 100, 25);
         var field = label.RightCopy();
         var row = ElementBounds.Fixed(0, 28, 360, 25);
+        // The switches' own column, down the left edge the pickers above them
+        // start at. Its own bounds rather than a copy of the label's, because
+        // the two now run the other way round: the box is placed and the words
+        // follow it. Where the column starts is settled below, once the picture
+        // picker has said how tall it came out.
+        var toggle = ElementBounds.Fixed(0, 28, SwitchWidth, SwitchSize);
 
         var inside = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
         inside.BothSizing = ElementSizing.FitToChildren;
@@ -118,22 +124,35 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
             // words rather than as a mark, because a switch in a game dialog is
             // read beside its label and there is nowhere here for an emblem to
             // mean anything.
-            .AddStaticText("Private", CairoFont.WhiteSmallText(),
-                label = label.WithFixedPosition(0, label.fixedY + label.fixedHeight)
-                    .WithFixedWidth(140).BelowCopy(0, 9))
+            //
+            // The switch is to the left of what it says, in both rows, and the
+            // two switches share a column. A control read left to right is found
+            // by its box and then read; with the boxes on the right the eye has
+            // to cross a line of text of a length it cannot predict to find out
+            // whether the answer is yes.
             .AddSwitch(on => _private = on,
-                label.RightCopy(20, -4).WithFixedWidth(40), PrivateSwitch, 30, 4)
+                toggle = Under(label), PrivateSwitch, SwitchSize, SwitchPad)
+            .AddStaticText("Private", CairoFont.WhiteSmallText(),
+                label = Beside(toggle))
 
-            .AddStaticText(PresetWords(), CairoFont.WhiteSmallText(),
-                label = label.BelowCopy(0, 9).WithFixedWidth(280))
             .AddSwitch(on => _preset = on,
-                label.BelowCopy(0, 5).WithFixedWidth(40), PresetSwitch, 30, 4)
+                toggle = toggle.BelowCopy(0, 6), PresetSwitch, SwitchSize, SwitchPad)
+            // What it does, not what it would be keyed on. The block's code
+            // belongs to the pattern the preset carries and not to the sentence
+            // on the switch: "keep as what game:rock-granite-* starts as" is a
+            // question nobody reads to the end of.
+            .AddStaticText("Set as preset", CairoFont.WhiteSmallText(),
+                label = Beside(toggle))
 
+            // Level with each other under the last of the switches, one at each
+            // end of the row — which is where the game's own window puts them.
+            // Hung off the label they had been level with the words rather than
+            // with the boxes beside them.
             .AddSmallButton("Cancel", OnCancel,
-                row.FlatCopy().FixedUnder(label, 34).WithFixedWidth(100),
+                row.FlatCopy().FixedUnder(toggle, 30).WithFixedWidth(100),
                 EnumButtonStyle.Normal)
             .AddSmallButton("Save", OnSave,
-                row.FlatCopy().FixedUnder(label, 34).WithFixedWidth(100)
+                row.FlatCopy().FixedUnder(toggle, 30).WithFixedWidth(100)
                     .WithAlignment(EnumDialogArea.RightFixed),
                 EnumButtonStyle.Normal)
             .EndChildElements()
@@ -146,15 +165,34 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
         SingleComposer.IconListPickerSetValue(PicturePicker, Array.IndexOf(_pictures, _picture));
     }
 
-    /// <summary>What keeping this as a preset would key it on, said out loud —
-    ///  the whole of what a reader needs to decide whether they want it.</summary>
-    private string PresetWords()
-    {
-        var what = _offer.Block.Length > 0 ? _offer.Block
-            : _offer.Pattern.Length > 0 ? _offer.Pattern
-            : "this block";
-        return $"Keep as what {what} starts as";
-    }
+    /// <summary>How tall a switch is drawn, how much of that is its padding, and
+    ///  how wide a column one needs. The game's own numbers for a switch, said
+    ///  once so the two rows cannot come out at different heights.</summary>
+    private const int SwitchSize = 30;
+    private const int SwitchPad = 4;
+    private const int SwitchWidth = 40;
+
+    /// <summary>
+    /// Where the first switch goes: under whatever the picture picker came out
+    /// as, by the same arithmetic the row above it used before the switches
+    /// changed sides. A picker wraps to as many rows as the mods on the server
+    /// give it, so nothing here may assume how tall it is.
+    /// </summary>
+    private static ElementBounds Under(ElementBounds pictures) =>
+        ElementBounds.Fixed(
+            0,
+            // Four up, which is where the switch sat when it was beside its own
+            // words rather than before them: a switch is taller than a line of
+            // text and the pair is read as one row.
+            pictures.fixedY + pictures.fixedHeight * 2 + 9 - 4,
+            SwitchWidth,
+            SwitchSize);
+
+    /// <summary>The words that go beside a switch: level with the line of text
+    ///  the switch is centred on, and clear of the box by the gap the rest of
+    ///  this window is spaced on.</summary>
+    private static ElementBounds Beside(ElementBounds toggle) =>
+        ElementBounds.Fixed(toggle.fixedX + SwitchWidth + 6, toggle.fixedY + 4, 280, 25);
 
     /// <summary>Where the marker goes, in the world's own numbers.</summary>
     private string Where() =>

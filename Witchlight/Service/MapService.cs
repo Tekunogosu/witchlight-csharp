@@ -98,11 +98,14 @@ public sealed class MapService : IDisposable
 
     private readonly Feed _players = new("players", "/live/players");
     private readonly Feed _markers = new("markers", "/live/markers");
+    private readonly Feed _claims = new("claims", "/live/claims");
     private readonly Feed _world = new("world", "/live/world");
 
     public string PlayersHealth => HealthOf(_players);
 
     public string MarkersHealth => HealthOf(_markers);
+
+    public string ClaimsHealth => HealthOf(_claims);
 
     public string WorldHealth => HealthOf(_world);
 
@@ -119,12 +122,12 @@ public sealed class MapService : IDisposable
     /// The lock over what the last post of each kind did, and whether the fault
     /// has been said out loud.
     ///
-    /// Three feeds post at once, each on its own threadpool thread, and
+    /// Every feed posts at once, each on its own threadpool thread, and
     /// `/witchlight status` reads the health lines from the game thread — so this
-    /// is state with three writers and a reader that is none of them. One lock
-    /// rather than one per feed, because "say it once" is a claim about all three
-    /// together: two feeds failing in the same second is one outage, and it was
-    /// the unguarded check on `_complained` that let both of them say so.
+    /// is state with several writers and a reader that is none of them. One lock
+    /// rather than one per feed, because "say it once" is a claim about all of
+    /// them together: two feeds failing in the same second is one outage, and it
+    /// was the unguarded check on `_complained` that let both of them say so.
     /// </summary>
     private readonly object _reporting = new();
 
@@ -132,6 +135,8 @@ public sealed class MapService : IDisposable
     private readonly TimeSpan _resendMarkers;
     private string _sentMarkers = "";
     private DateTime _markersSentAt = DateTime.MinValue;
+    private string _sentClaims = "";
+    private DateTime _claimsSentAt = DateTime.MinValue;
     private bool _complained;
 
     /// <param name="resendMarkersEvery">
@@ -343,8 +348,8 @@ public sealed class MapService : IDisposable
         Ask("/presets/keep", new { Uid = uid, Preset = preset });
 
     /// <summary>
-    /// Takes the markers somebody asked for on the web, and leaves the service
-    /// holding none.
+    /// Takes everything somebody asked for on the web — the markers, and the
+    /// land claims — and leaves the service holding none.
     ///
     /// The channel between the halves only runs one way — the mod posts, the
     /// service answers — so a marker typed into the web form cannot be pushed at
@@ -370,7 +375,7 @@ public sealed class MapService : IDisposable
             // would otherwise say so thirty times a minute. The other three asks
             // happen because somebody typed or pressed something and is owed the
             // reason out loud.
-            return await Ask("/markers/pending", quietly: true).ConfigureAwait(false);
+            return await Ask("/pending", quietly: true).ConfigureAwait(false);
         }
         finally
         {
@@ -380,6 +385,27 @@ public sealed class MapService : IDisposable
 
     /// <summary>Who is online and where. Held in memory by the service.</summary>
     public void Players(string json) => Post(_players, json);
+
+    /// <summary>
+    /// Every land claim, with who may be shown them.
+    ///
+    /// Sent whenever it is not what was sent last, exactly as the markers are and
+    /// for the same reason: claims change a few times a week and this is the bulk
+    /// of what there is to send. Unlike the markers there is no slow resend to
+    /// heal a service that restarted, because there is nothing on its side to be
+    /// stale — it holds none of this on disk, so a service that restarts has no
+    /// claims at all and the resend below covers it.
+    /// </summary>
+    public void Claims(string json)
+    {
+        var overdue = DateTime.UtcNow - _claimsSentAt >= _resendMarkers;
+        if (json == _sentClaims && !overdue)
+        {
+            return;
+        }
+
+        Post(_claims, json);
+    }
 
     /// <summary>What the world's clock says, on its way to whoever is looking.</summary>
     public void World(string json) => Post(_world, json);
@@ -457,10 +483,17 @@ public sealed class MapService : IDisposable
             return;
         }
 
+        // Recorded when it lands rather than when it is attempted, so a post
+        // dropped because the last was still in flight is not remembered as sent.
         if (feed == _markers)
         {
             _sentMarkers = json;
             _markersSentAt = DateTime.UtcNow;
+        }
+        else if (feed == _claims)
+        {
+            _sentClaims = json;
+            _claimsSentAt = DateTime.UtcNow;
         }
 
         Recovered(feed, $"reaching {endpoint.Url}, {json.Length} bytes accepted");

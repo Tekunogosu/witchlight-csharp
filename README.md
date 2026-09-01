@@ -117,11 +117,17 @@ autostart = true
 [commands]
 export = "admin"
 login = "player"
+
+# Who may see the land claims on the map, and who may draw one from it.
+[claims]
+view = "player"
+create = "claimland"
 ```
 
 Turn `autostart` off to run `witchlight serve` by hand instead, which is what a map
 that should stay up while the game server is down wants. `/witchlight service start`
-still runs it on demand. `[commands]` is under [Server commands](#server-commands).
+still runs it on demand. `[commands]` is under [Server commands](#server-commands),
+and `[claims]` under [Land claims](#land-claims).
 
 Where the map ended up listening goes in the server's own log as it comes up:
 
@@ -381,10 +387,10 @@ players fetch a palette lets its players be fetched from, because that is the sa
 question asked from the other end. What guards the map either way is what is done
 with the answer — see the palette section above.
 
-`witchlight status` prints the table in force. That is where to look on a server
-upgrading into this, since a settings file written before `[commands]` existed says
-nothing about it and nothing rewrites a file an operator owns just to add a section
-of defaults it is already following.
+`witchlight status` prints the table in force, a line per settings table. That is
+where to look on a server upgrading into this, since a settings file written before
+a section existed says nothing about it and nothing rewrites a file an operator
+owns just to add a section of defaults it is already following.
 
 | | |
 |---|---|
@@ -497,6 +503,41 @@ The layer is laid down as a **set** rather than one waypoint at a time — every
 temporary waypoint is cleared and the current set put back whenever it differs —
 so a marker that is gone is gone by not being in the set.
 
+### What a marker is about
+
+A waypoint is a place and nothing else, which is all the game has ever needed.
+Presets are keyed on a block, so "what was this marker put on" is a question only
+this side can answer — and only at the moment the marker is made, while the chunk
+is loaded and the block is still what it was. A marker made on an ore vein since
+mined out would otherwise report whatever is there now.
+
+So it is read once and kept, in the savegame beside the waypoints, and it travels
+with the marker as `Block`. It is read again wherever a marker moves, and it can
+be set outright: making a screenful of markers look like a preset sets it to that
+preset's pattern, which is that preset saying what kind of thing those markers
+are.
+
+`Beside<T>` owns the reading, the writing and the forgetting for that store and
+for the visibility choices, because they are the same shape of answer about the
+same thing: something this mod knows about a waypoint that the game does not,
+kept where a world that loses its waypoints loses it too.
+
+### Keeping a marker in sight
+
+The game holds a **pinned** waypoint against the edge of the map instead of
+letting it scroll off, and any marker a player is sent can be pinned from the web
+map. It is one person's choice about one marker: pinning somebody's marker puts it
+on the pinner's map and on no other, so whether they may is whether they may see
+it — their own always, and anybody else's while it is public.
+
+The answer is in two halves and `Pins` owns both, because "is this pinned for this
+person" is one question and two places answering it is two answers. A player's own
+marker is answered by the waypoint, which is where the game's own map dialog also
+writes it, so pinning from the web and pinning in game are the same switch.
+Everybody else's arrives as a temporary waypoint rebuilt from what the server
+sends, so a flag on it has nowhere to live — that half is stored beside the
+visibility choices, in the savegame, and rides the per-player share.
+
 ### Marking a place without leaving the game
 
 **Create from Witchlight preset** — a key under the character controls, bound to
@@ -534,6 +575,64 @@ first, and the two are one behaviour: the server's copy sends that player's own
 client a nudge and the client answers it as the key does, rather than the server
 answering a poorer version of the question from where they happen to be standing.
 
+## Land claims
+
+Every land claim on the server goes to the web map on the same slow beat the
+markers do, and the map draws each one as the ground it covers — one rectangle per
+area, so a claim built out of several adjacent boxes keeps the shape of its
+boundary. Somebody the server lets claim land can draw a new one on the map, and
+the game makes it.
+
+Two settings, because there are two questions:
+
+```toml
+[claims]
+view = "player"       # see where the claims are
+create = "claimland"  # draw a new one from the map
+```
+
+Both take `admin`, `player`, or any privilege the game knows, exactly as
+`[commands]` does. `view` starts open: the game already sends every claim to every
+client and draws the borders for anyone holding the right tool, so a map that hid
+them would tell players less than the game does. `create` starts at `claimland`,
+which is what the game asks of `/land claim`.
+
+A claim can also be renamed, re-permissioned and given up from the map. Those are
+its owner's, or anybody holding `commandplayer` — what vanilla's `/land adminfree`
+asks of somebody deleting a claim that is not theirs. Who a claim lets in is the
+game's own two everybody-permissions and the players named on it; names typed
+into the map's form are turned into uids here, because this is the half that can,
+and a name the server has never seen is dropped with a line in the log rather
+than refusing the whole change.
+
+Moving a boundary is not offered. It has to be judged against every other claim
+and against an allowance, and the map cannot show somebody what they would be
+giving up — so redrawing is making a new one, which the form already does.
+
+**The map is never a way round a rule the server already has.** `Claims/Claiming.cs`
+checks the world's `allowLandClaiming`, the game's own `claimland` privilege, how
+many separate claims that person may hold, their role's allowance and smallest
+permitted size, and whether the rectangle overlaps anybody's claim — the same
+list, in the same order, that `/land claim add` walks. The `[claims] create`
+setting is asked **in addition** to the game's privilege and never instead of it,
+so narrowing it narrows the map alone. A refusal names who and why in the log,
+because the person who asked is in a browser and the server is where the answer
+belongs.
+
+The map sends the claims once with a list of who may be shown them, rather than a
+copy per person: who may see a claim is a fact about the reader and not about the
+claim, so fifty players and a hundred claims is one list rather than fifty copies
+of one. Who may is worked out against the stored player data rather than against
+who is online — somebody reading the map while their player is offline is
+answered properly instead of being refused for not being in the world.
+
+What each person is allowed to claim travels beside it, to that person alone, so
+the map's own form can say what a rectangle costs before asking for it. A claim's
+volume is mostly its depth and an allowance is counted in cubic metres, so the
+form asks for a depth rather than assuming the whole height of the world — which
+at a survival player's quarter of a million cubic metres would be a square
+thirty-two blocks across.
+
 ## Findings worth keeping
 
 Four things that each cost a debugging round, recorded so they are not
@@ -566,7 +665,23 @@ from `$VINTAGE_STORY`, falling back to `~/.local/share/vintagestory`.
 ./package.sh --no-build          # repackage what was built last
 ./package.sh --service FILE      # use this map service binary
 ./package.sh --no-service        # a server archive without one
+./package.sh --service-repo DIR  # where the map service source lives
 ```
+
+**Both halves are built, because they are one release.** The map service is a
+separate program in a separate repository, so where that repository is has to be
+said — `WITCHLIGHT_SERVICE_REPO`, in the environment or in a `.env` file beside
+the script:
+
+```sh
+cp .env.example .env             # then edit the path in it
+```
+
+`.env` is not committed: a path on one machine is not a fact about the project.
+It is read before anything is settled and only into names nothing has already
+set, so a one-off `WITCHLIGHT_SERVICE_REPO=... ./package.sh` still wins over what
+is written in it. Anything in the file that is not a name and a value is skipped
+rather than treated as an error — it is a convenience, not a manifest.
 
 One assembly, two archives. The mod runs on both sides and decides for itself
 which half to start, so the code is identical either way; what differs is that a
@@ -585,10 +700,25 @@ Record it from a server running nothing but this mod, out of a full game install
 so the textures are there. The script refuses a palette with a mod's blocks in it
 or with a gap in it, since a recording shipped to every server must be neither.
 
-The map service is looked for in `/var/tmp/rust-target/release/witchlight` and
-`../rust/witchlight/target/release/witchlight`, or wherever `$WITCHLIGHT_SERVICE`
-says. Packaging **stops** when there is none, rather than quietly producing a mod
-that exports a map it cannot serve; `--no-service` is how to mean it.
+The service is built with `cargo build --release` and then found by asking cargo
+where it put it — `cargo metadata`'s `target_directory` — rather than by
+assembling a path from the repository's layout. `CARGO_TARGET_DIR`, a
+`.cargo/config.toml` and a `target` symlink can each send the output somewhere
+else, and a path worked out here would be a second opinion on a question cargo
+already answers. `--service FILE` (or `$WITCHLIGHT_SERVICE`) names a built binary
+instead and skips the build, which is for a machine that cannot compile Rust at
+all. Packaging **stops** when there is no service, rather than quietly producing
+a mod that exports a map it cannot serve; `--no-service` is how to mean it.
+
+Building both halves here is what makes "one archive, one release" true of the
+build and not only of the version check. That check compares the binary's own
+`--version` against `modinfo.json` and catches a version bumped without a
+rebuild — but nothing could catch a source file *edited* without one, which is
+the failure that used to ship a stale map service under a version that looked
+right. The rebuild is no longer something to remember.
+
+`--no-build` skips both builds, and is for repackaging exactly what was built
+last.
 
 The archive holds `modinfo.json` and `Witchlight.dll` at its root, plus the map
 service under `service/linux-x64/` on a server build, named
@@ -618,6 +748,8 @@ together.
 | `Palette/` | what a block looks like, the base game's colours recorded once, and asking a client for the rest |
 | `Players/` | where everybody is, what the map may say about them, and the bars a card carries |
 | `Markers/` | markers, who may see them, and what one player is shown of another's |
+| `Claims/` | the land claims: what the map is told about them, and the taking of a new one |
+| `Web/` | what somebody asked for on the web map, and the doing of it |
 | `Portraits/` | drawing a player, which only their own machine can do |
 | `Icons/` | the marker icons, which arrive the same way a palette does |
 | `Network/` | what travels between the two sides, and how it is sliced to fit |
@@ -641,7 +773,12 @@ markers to a server. **`Mod/Permissions.cs` owns who may do what**: the privileg
 command registers under, whether a named player may be asked for what a command
 fetches, and who is in the room when the server needs a palette were a literal
 `controlserver` at each site and a `bool admin` threaded between them, which is
-three chances to disagree about what an operator asked for.
+three chances to disagree about what an operator asked for. It answers for gates
+that are not commands too — the two land claim ones — because each entry carries
+the settings key it is written under, and "who may do this" is one question
+however many tables the file keeps its answers in. It is also the only place that
+can answer about somebody who is not standing in the world, which the web map
+needs and a bare `IPlayer.HasPrivilege` cannot give.
 
 ## Known gaps
 

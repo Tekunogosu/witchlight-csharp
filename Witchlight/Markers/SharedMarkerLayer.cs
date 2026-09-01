@@ -102,7 +102,12 @@ public sealed class SharedMarkerLayer
                 Icon = marker.Icon,
                 Color = marker.Color,
                 OwningPlayerUid = null,
-                Pinned = false,
+                // The server said whether this reader keeps it in sight, and a
+                // pinned waypoint is held against the edge of the map rather
+                // than scrolling off it. Laid down again on every redraw, which
+                // is what a temporary waypoint is: there is nothing here to
+                // change in place when somebody pins one from the web map.
+                Pinned = marker.Pinned,
                 Guid = "witchlight:" + marker.Key,
             });
         }
@@ -126,7 +131,7 @@ public sealed class SharedMarkerLayer
     {
         var said = _shared.Values
             .Select(marker =>
-                $"{marker.Key}|{marker.X}|{marker.Y}|{marker.Z}|{marker.Title}|{marker.Icon}|{marker.Color}|{marker.Owner}")
+                $"{marker.Key}|{marker.X}|{marker.Y}|{marker.Z}|{marker.Title}|{marker.Icon}|{marker.Color}|{marker.Owner}|{marker.Pinned}")
             .OrderBy(line => line, StringComparer.Ordinal);
         return string.Join("\n", said);
     }

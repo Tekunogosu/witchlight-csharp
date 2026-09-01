@@ -23,6 +23,14 @@ public class SharedMarker
     [ProtoMember(6)] public string Icon { get; set; } = Markers.PlainIcon;
     [ProtoMember(7)] public int Color { get; set; }
     [ProtoMember(8)] public string Owner { get; set; } = "";
+
+    /// <summary>
+    /// Whether the player this is being sent to keeps it in sight — the game's
+    /// own pin, which holds a waypoint against the edge of the map rather than
+    /// letting it scroll off. One person's answer about one marker, which is why
+    /// it rides the per-player send rather than the marker itself.
+    /// </summary>
+    [ProtoMember(9)] public bool Pinned { get; set; }
 }
 
 /// <summary>Everything one player should see from everyone else.</summary>

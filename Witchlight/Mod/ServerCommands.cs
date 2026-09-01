@@ -169,11 +169,15 @@ public partial class WitchlightSystem
             return TextCommandResult.Error("server not ready");
         }
 
-        var lines = new List<string?>
-        {
+        // A collection expression rather than an initialiser, so that the
+        // permissions can spread their own lines in. Who may do what is one line
+        // per settings table and this is not the half that knows how many tables
+        // there are.
+        List<string?> lines =
+        [
             $"version: {Mod.Info.Version}",
             $"exports: {Settings.Exports}",
-            Permissions.Describe(),
+            .. Permissions.Describe(),
             Settings.PerWorld
                 ? $"filed: a directory per world, inside {Settings.MapData}"
                 : "filed: one map for this data path (per_world is off)",
@@ -192,18 +196,22 @@ public partial class WitchlightSystem
             },
             _exporter?.Describe() ?? "terrain: not exporting yet",
             $"mapped: {_exporter?.Mapped ?? 0} chunks",
-            $"markers: {MarkerFeed.All(api, _visibility).Count} saved on this server"
-                + $", {_visibility.Decisions} with a chosen visibility",
+            $"markers: {MarkerFeed.All(api, _visibility, _origins).Count} saved on this server"
+                + $", {_visibility.Decisions} with a chosen visibility"
+                + $", {_pins.Decisions} pinned to somebody else's map"
+                + $", {_origins.Known} with the block they were made on",
             $"icons: {_icons?.Count ?? 0} for drawing them",
             $"portraits: {Portraits.Count(Settings.Exports)} sent by players",
+            $"claims: {ClaimFeed.Count(api)} on this server",
             $"players out: {_service?.PlayersHealth ?? "not started"}",
             $"markers out: {_service?.MarkersHealth ?? "not started"}",
+            $"claims out: {_service?.ClaimsHealth ?? "not started"}",
             $"waiting: {_exporter?.Waiting ?? 0} columns changed since then",
             // Only while one is running. A seed is a state a server passes through
             // rather than one it sits in, and a line saying it is not seeding is a
             // line every reader has to skip for the rest of the world's life.
             _seeding?.Describe(),
-        };
+        ];
 
         return TextCommandResult.Success(string.Join("\n", lines.Where(line => line is not null)));
     }

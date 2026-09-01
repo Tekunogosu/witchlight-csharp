@@ -39,6 +39,21 @@ public partial class WitchlightSystem : ModSystem
     /// </summary>
     private Visibility _visibility = Visibility.Empty;
 
+    /// <summary>
+    /// Which markers each player keeps in sight on their own map. Read once the
+    /// world is up, because it lives in the savegame, and written back with it —
+    /// the same life <see cref="_visibility"/> has, for the same reason.
+    /// </summary>
+    private Pins _pins = Pins.Empty;
+
+    /// <summary>
+    /// What block each marker was put on. Read once the world is up and written
+    /// back with it, the same life the two stores above have — and for the same
+    /// reason: it is a fact about a waypoint, and a store that outlived the
+    /// waypoints would describe markers that are gone.
+    /// </summary>
+    private Origins _origins = Origins.Empty;
+
     private Exporter? _exporter;
 
     /// <summary>The palette as the assets gave it, before there was anywhere to
@@ -149,7 +164,7 @@ public partial class WitchlightSystem : ModSystem
         // link they have already stopped looking for.
         api.Event.PlayerNowPlaying += player => Doing("greeting a player", () =>
         {
-            SharedServer.SendTo(api, player, _visibility);
+            SharedServer.SendTo(api, player, _visibility, _pins);
             // The whole room rather than the player who just joined: an admin
             // arriving is the moment to ask an admin, and an admin already
             // playing is a better answer than the player who walked in.
@@ -198,6 +213,9 @@ public partial class WitchlightSystem : ModSystem
 
         api.Event.GameWorldSave += () => Doing("exporting on save", () => Export("world save"));
         api.Event.GameWorldSave += () => Doing("storing marker visibility", StoreVisibility);
+        api.Event.GameWorldSave += () => Doing("storing marker pins", StorePins);
+        api.Event.GameWorldSave += () =>
+            Doing("storing the blocks markers were made on", StoreOrigins);
 
         // Everything that needs a world rather than a mod: where the world counts
         // from, who may see which marker, and the service that serves them.
@@ -219,6 +237,8 @@ public partial class WitchlightSystem : ModSystem
             _exporter = new Exporter(api, Settings.Exports, id => _palettes?.Shows(id) ?? true);
             _exporter.KeepWorldFacts();
             _visibility = Visibility.Read(api);
+            _pins = Pins.Read(api);
+            _origins = Origins.Read(api);
             StartService();
             BeginSeeding(api);
         }));
@@ -232,9 +252,19 @@ public partial class WitchlightSystem : ModSystem
         // dropped before it is sent anyway.
         api.Event.RegisterGameTickListener(Every("sharing markers", () =>
         {
-            SharedServer.SendToAll(api, _visibility);
-            _service?.Markers(MarkerFeed.Json(api, _visibility));
+            SharedServer.SendToAll(api, _visibility, _pins);
+            _service?.Markers(MarkerFeed.Json(api, _visibility, _pins, _origins));
         }), ShareIntervalMs);
+
+        // The land claims ride the same slow beat, for the same reasons: they
+        // change a few times a week, they are the bulk of what there is to send
+        // beside the markers, and a post that says nothing new is dropped before
+        // it goes anyway. Who may see them travels with them, and that can change
+        // between posts — a role granted, a player added — which is the other half
+        // of why this repeats rather than being sent once at start.
+        api.Event.RegisterGameTickListener(
+            Every("sharing claims", () => _service?.Claims(ClaimFeed.Json(api))),
+            ShareIntervalMs);
 
         // A tick listener rather than a load event: it is guaranteed to fire, and
         // repeating it keeps the map current without anyone typing a command.
@@ -262,12 +292,12 @@ public partial class WitchlightSystem : ModSystem
         api.Event.RegisterGameTickListener(Every("posting the world's clock", () =>
             _service?.World(WorldClock.Json(api))), LiveIntervalMs);
 
-        // Markers asked for on the web ride the same tick. They are rare, the ask
-        // is a single request that usually comes back empty, and collecting them
-        // on the slow marker timer instead would mean watching a form for fifteen
-        // seconds to find out whether it worked.
+        // What was asked for on the web rides the same tick. It is rare, the ask
+        // is a single request that usually comes back empty, and collecting on the
+        // slow marker timer instead would mean watching a form for fifteen seconds
+        // to find out whether it worked.
         api.Event.RegisterGameTickListener(
-            Every("collecting markers", CollectMarkers), LiveIntervalMs);
+            Every("collecting what the map asked for", CollectAsks), LiveIntervalMs);
     }
 
     /// <summary>
@@ -372,17 +402,17 @@ public partial class WitchlightSystem : ModSystem
     }
 
     /// <summary>
-    /// Collects the markers somebody asked for on the web and puts them on the
-    /// map.
+    /// Collects what somebody asked for on the web — markers, and land claims —
+    /// and does it.
     ///
-    /// The asking is a round trip and the making touches the waypoint list, so the
-    /// two happen in different places: the request goes off the game thread, and
-    /// what comes back is applied on it. Markers go straight back out afterwards
-    /// rather than waiting for the slow timer, because the browser that asked is
-    /// watching for its own marker to appear and fifteen seconds of nothing reads
-    /// as a form that failed.
+    /// The asking is a round trip and the doing touches the waypoint list and the
+    /// claim list, so the two happen in different places: the request goes off the
+    /// game thread, and what comes back is applied on it. Whatever changed goes
+    /// straight back out afterwards rather than waiting for the slow timer,
+    /// because the browser that asked is watching for its own to appear and
+    /// fifteen seconds of nothing reads as a form that failed.
     /// </summary>
-    private void CollectMarkers()
+    private void CollectAsks()
     {
         if (_sapi is not { } api || _service is not { } service)
         {
@@ -400,19 +430,34 @@ public partial class WitchlightSystem : ModSystem
             api.Event.EnqueueMainThreadTask(
                 () => Doing("making markers", () =>
                 {
-                    var landed = Pending.Apply(api, _visibility, held);
+                    var landed = Pending.Apply(api, _visibility, _pins, _origins, held);
                     if (!landed.Anything)
                     {
                         return;
                     }
 
                     api.Logger.Notification(
-                        "[witchlight] web map: {0} marker(s) made, {1} changed, {2} deleted",
-                        landed.Made, landed.Changed, landed.Removed);
-                    SharedServer.SendToAll(api, _visibility);
-                    service.Markers(MarkerFeed.Json(api, _visibility));
+                        "[witchlight] web map: {0} marker(s) made, {1} changed, {2} deleted, "
+                        + "{3} pinned or unpinned; "
+                        + "{4} land claim(s) made, {5} changed, {6} given up",
+                        landed.Made, landed.Changed, landed.Removed, landed.Pinned,
+                        landed.Claims.Made, landed.Claims.Changed, landed.Claims.Removed);
+
+                    // Only what actually changed. A claim the game has taken tells
+                    // every client itself — see `ILandClaimAPI.Add` — so pushing
+                    // the markers to everybody because a claim landed would be a
+                    // few tens of kilobytes per player to say nothing.
+                    if (landed.AnyMarkers)
+                    {
+                        SharedServer.SendToAll(api, _visibility, _pins);
+                        service.Markers(MarkerFeed.Json(api, _visibility, _pins, _origins));
+                    }
+                    if (landed.Claims.Anything)
+                    {
+                        service.Claims(ClaimFeed.Json(api));
+                    }
                 }),
-                "witchlight-markers");
+                "witchlight-asks");
         });
     }
 
@@ -459,7 +504,7 @@ public partial class WitchlightSystem : ModSystem
             return;
         }
 
-        var reply = Marking.Answer(api, _visibility, player, ask, person, block);
+        var reply = Marking.Answer(api, _visibility, _origins, player, ask, person, block);
         api.Network.GetChannel(Channel.Name).SendPacket(reply, player);
         if (!reply.Made)
         {
@@ -469,8 +514,8 @@ public partial class WitchlightSystem : ModSystem
         // Straight back out rather than on the slow timer: the person who made it
         // is standing there, and everybody else's map should have it before they
         // walk away from the spot.
-        SharedServer.SendToAll(api, _visibility);
-        service.Markers(MarkerFeed.Json(api, _visibility));
+        SharedServer.SendToAll(api, _visibility, _pins);
+        service.Markers(MarkerFeed.Json(api, _visibility, _pins, _origins));
 
         // The preset is the map service's to keep, so it goes off the game thread
         // and nothing waits on it. A marker that landed must not be undone by a
@@ -498,6 +543,35 @@ public partial class WitchlightSystem : ModSystem
         // reached — an empty list there would read as "every marker has been
         // deleted" and take every decision with it.
         _visibility.Write(_sapi, Markers.Layer(_sapi)?.Waypoints);
+    }
+
+    /// <summary>
+    /// Stores which markers each player keeps in sight, beside the waypoints
+    /// themselves and under the rule <see cref="StoreVisibility"/> follows: the
+    /// live list where there is one, and nothing where the layer cannot be
+    /// reached, so a save taken while it is down forgets nobody.
+    /// </summary>
+    private void StorePins()
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        _pins.Write(_sapi, Markers.Layer(_sapi)?.Waypoints);
+    }
+
+    /// <summary>Stores what block each marker was put on, under the rule the two
+    ///  stores above follow: the live list where there is one, and nothing where
+    ///  the layer cannot be reached.</summary>
+    private void StoreOrigins()
+    {
+        if (_sapi is null)
+        {
+            return;
+        }
+
+        _origins.Write(_sapi, Markers.Layer(_sapi)?.Waypoints);
     }
 
     public override void Dispose()
