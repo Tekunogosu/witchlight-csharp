@@ -34,16 +34,55 @@ public sealed class Exporter
     /// <summary>Whether spawn has reached the map service yet.</summary>
     private bool _wroteWorldFacts;
 
-    public Exporter(ICoreServerAPI api, string exports)
+    /// <summary>
+    /// Whether a block puts anything where it stands, which is what makes it the
+    /// top of a column rather than something to walk past.
+    ///
+    /// Asked of the palette rather than worked out here, and asked each time
+    /// rather than copied, so a better palette from a client corrects what gets
+    /// exported from the next beat onward — see <see cref="PaletteExchange.Shows"/>.
+    /// </summary>
+    private readonly System.Func<int, bool> _shows;
+
+    /// <summary>
+    /// The chiselled blocks, whose colour is the colour of what they were cut
+    /// from rather than anything the block itself has.
+    ///
+    /// Read off the block list once. Which ids those are is fixed for the life of
+    /// a world — it is decided when the mods finish loading, and this is built
+    /// after that — so it is asked once rather than on every column of every
+    /// export.
+    /// </summary>
+    private readonly Microblocks _chiselled;
+
+    public Exporter(ICoreServerAPI api, string exports, System.Func<int, bool> shows)
     {
         _api = api;
         _exports = exports;
+        _shows = shows;
+        _chiselled = Microblocks.In(api.World);
 
         // What a previous run left on disk. Columns already there are not re-read
         // merely for being loaded again, and the seasons stored beside them say
         // whether the year has moved since.
-        _seasons = Regions.Index(Regions.DirectoryIn(exports), GlobalConstants.ChunkSize);
-        _dirty.Seed(_seasons.Keys);
+        var survey = Regions.Walk(Regions.DirectoryIn(exports), GlobalConstants.ChunkSize);
+        _seasons = survey.Seasons;
+
+        // Except the ones stored with a hole in them. A column recorded as air is
+        // a reading that failed, not a fact about the world, and the map paints it
+        // as ground nobody has ever explored — so it is worth the one re-read that
+        // replaces it with what is actually down there. Left out of what counts as
+        // exported, which is the existing way of saying "read this again when it
+        // is next in memory": loaded now, and it is marked below; loaded later,
+        // and the server's own ChunkDirty says so.
+        _dirty.Seed(_seasons.Keys.Where(column => !survey.Holed.Contains(column)));
+        if (survey.Holed.Count > 0)
+        {
+            api.Logger.Notification(
+                "[witchlight] {0} chunk(s) on disk hold a column stored as air — they will be "
+                + "read again as they load",
+                survey.Holed.Count);
+        }
 
         // And what the server loaded before this existed to hear about it, which
         // is the square of chunks around spawn. Those are held for the life of the
@@ -116,7 +155,7 @@ public sealed class Exporter
                 load.Add(Regions.Of(cx, cz));
             }
 
-            var set = ColumnPump.Gather(_api, dir, wanted, load);
+            var set = ColumnPump.Gather(_api, dir, wanted, load, _shows, _chiselled);
 
             // Neither of these was read, so neither counts as exported. One waits
             // for the next export, the other for the chunk to be loaded again.
@@ -177,7 +216,9 @@ public sealed class Exporter
 
         var stored = regions.Values.Sum(Length);
         var newest = regions.Values.Select(path => new FileInfo(path).LastWriteTime).Max();
-        return $"terrain: {regions.Count} regions, {stored / 1024} KiB, newest written {newest:HH:mm:ss}";
+        return $"terrain: {regions.Count} regions, {stored / 1024} KiB, "
+            + $"newest written {newest:HH:mm:ss}, {_chiselled.Kinds} chiselled block(s) resolved "
+            + "to their material";
     }
 
     private static long Length(string path)

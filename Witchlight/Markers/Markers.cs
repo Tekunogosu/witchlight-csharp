@@ -35,6 +35,53 @@ public static class Markers
     }
 
     /// <summary>
+    /// What the game names a marker nobody named. The map's own form asks for
+    /// this same word — three programs agree on it.
+    /// </summary>
+    public const string Unnamed = "Marker";
+
+    /// <summary>The most a marker's name may be. Longer is a paragraph, not a name.</summary>
+    public const int LongestTitle = 128;
+
+    /// <summary>The picture the game draws a marker with when nobody chose one.</summary>
+    public const string PlainIcon = "circle";
+
+    /// <summary>What a marker whose colour did not survive the trip is drawn.</summary>
+    public const string WhiteHex = "#ffffff";
+
+    /// <summary>The same, as a waypoint stores it.</summary>
+    public static readonly int White = Packed(WhiteHex)!.Value;
+
+    /// <summary>
+    /// What a marker is called, or something rather than nothing.
+    ///
+    /// Two paths make a marker — the map's own form and a press of the key in
+    /// game — and both had their own copy of this, their own <c>128</c> and their
+    /// own spelling of the word for an unnamed one. It is one question about one
+    /// kind of thing, so it is answered here and both are a call against it.
+    /// </summary>
+    public static string Title(string? said)
+    {
+        var name = (said ?? "").Trim();
+        if (name.Length == 0)
+        {
+            return Unnamed;
+        }
+        return name.Length > LongestTitle ? name[..LongestTitle] : name;
+    }
+
+    /// <summary>
+    /// The picture to draw a marker with, or the game's own default.
+    ///
+    /// Four places asked this and one of them trimmed, so a name arriving with a
+    /// space around it was a plain marker on one path and a picture that can
+    /// never be found on the other. Trimmed here: a name with a space in it is
+    /// not a file on anybody's disk.
+    /// </summary>
+    public static string Picture(string? icon) =>
+        string.IsNullOrWhiteSpace(icon) ? PlainIcon : icon.Trim();
+
+    /// <summary>
     /// Identity for a marker as anything outside the game sees it.
     ///
     /// The waypoint's own guid where there is one; position and title stand in

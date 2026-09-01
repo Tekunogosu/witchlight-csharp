@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
@@ -61,6 +62,34 @@ public class LivePlayer
     public float Saturation { get; set; }
     public float MaxSaturation { get; set; }
 
+    /// <summary>
+    /// Anything else this server has been asked to show for a player — mana, a
+    /// level, whatever a mod keeps on the entity.
+    ///
+    /// Empty on a server that asked for none and on a player who has none, which
+    /// are the same thing as far as a card is concerned. See
+    /// <see cref="PlayerBar"/> for why the map can read a mod's numbers without
+    /// knowing anything about the mod.
+    /// </summary>
+    public List<LiveBar> Bars { get; set; } = new();
+}
+
+/// <summary>One reading, and how much of it there could be.</summary>
+public class LiveBar
+{
+    public string Name { get; set; } = "";
+    public float Value { get; set; }
+    public float Max { get; set; }
+
+    /// <summary>What colour to draw it, as the settings gave it.</summary>
+    public string Colour { get; set; } = "";
+
+    /// <summary>
+    /// What to file it under where the map lets a reader switch bars off, or
+    /// empty where nobody could say. See <see cref="PlayerBar"/> for why this
+    /// cannot simply be worked out.
+    /// </summary>
+    public string Group { get; set; } = "";
 }
 
 /// <summary>
@@ -212,6 +241,26 @@ public static class PlayerFeed
     /// </summary>
     private static float Bearing(float yaw) => GameMath.Mod(180f - yaw * GameMath.RAD2DEG, 360f);
 
+    /// <summary>
+    /// The extra readings this player carries, of the ones the settings ask for.
+    ///
+    /// A player with none of them gets an empty list rather than a list of empty
+    /// bars — see <see cref="PlayerBar.Of"/>, which is where a bar that does not
+    /// apply is told from one that is merely at zero.
+    /// </summary>
+    private static List<LiveBar> Bars(ICoreServerAPI api, Entity entity)
+    {
+        var found = new List<LiveBar>();
+        foreach (var bar in PlayerBar.Settled(api))
+        {
+            if (bar.Of(entity) is { } reading)
+            {
+                found.Add(reading);
+            }
+        }
+        return found;
+    }
+
     public static List<LivePlayer> All(ICoreServerAPI api, string exports)
     {
         var players = new List<LivePlayer>();
@@ -239,6 +288,7 @@ public static class PlayerFeed
                 MaxHealth = health?.GetFloat("maxhealth") ?? 0f,
                 Saturation = hunger?.GetFloat("currentsaturation") ?? 0f,
                 MaxSaturation = hunger?.GetFloat("maxsaturation") ?? 0f,
+                Bars = Bars(api, player.Entity),
                 Portrait = stored?.Name,
                 PortraitAt = stored?.At ?? 0,
             });

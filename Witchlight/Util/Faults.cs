@@ -20,17 +20,10 @@ namespace Witchlight;
 /// first did not, and burying the log is its own kind of outage. A different
 /// exception from the same work is a different failure and is said.
 /// </summary>
-public sealed class Faults
+public sealed class Faults(ILogger log)
 {
-    private readonly ILogger _log;
-
     /// <summary>Which failures have already been said, so none is said twice.</summary>
     private readonly HashSet<string> _reported = new(StringComparer.Ordinal);
-
-    public Faults(ILogger log)
-    {
-        _log = log;
-    }
 
     /// <summary>Runs the work, and swallows whatever comes out of it.</summary>
     public void Doing(string what, Action work)
@@ -43,7 +36,7 @@ public sealed class Faults
         {
             if (_reported.Add($"{what}/{error.GetType().Name}"))
             {
-                _log.Error(
+                log.Error(
                     "[witchlight] {0} failed, and this will not be reported again: {1}", what, error);
             }
         }

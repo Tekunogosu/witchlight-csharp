@@ -1,12 +1,420 @@
 # Witchlight (server mod)
 
-The version tracks the [map service](../rust/witchlight), and the two **must match
-on minor version** — they share a file format and a socket protocol, and neither
-reads what the other half of a different minor wrote.
+The version tracks the [map service](../rust/witchlight), and the two **carry the
+same version at all times** — they ship as one archive and are one release, so a
+change to either half moves both. `package.sh` reads the version out of the
+service binary and refuses to package a pair that disagrees, which is where that
+rule is kept rather than in anybody's memory.
+
+A version that moved for the other half says so and lists nothing, which is not an
+omission: it is what "one release" looks like from the side that did not change.
 
 While Witchlight is alpha, a format change **clears the map** on start rather than
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
+
+## 0.35.3
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared. The white
+goes on the next server start, because the shipped base-game palette is corrected
+and the server re-seeds from it — those blocks draw as plain ground straight
+away. `/witchlight export` with the chunks loaded is what turns them into the
+floor they are standing on. For colours built from a real asset set rather than
+the recording, run the palette command from a client once after upgrading.
+
+**Nothing white is left on the map that is not snow or ice.** `unknown.png` is
+the game's missing-texture checker — white, and opaque over the whole square —
+and it was being averaged as though it were a colour. Because it covers the whole
+square it beat every real texture that covers less than one, so every block
+wearing it came out `#fff9f9`, which is that file's own average. Clutter,
+cluttered bookshelves, banners, pies, fire, ground storage, rubble and the
+chiselled blocks all drew as white patches on ground that was the right colour.
+
+A placeholder for a texture is not a texture. The rule already existed for the
+textures a *shape* names and is now the same rule for the textures a *block*
+names, in one place both ask — a block whose every texture is the checker has
+none to try, which the palette already knows how to say. Such a block is drawn as
+whatever it is standing on: the floor of the ruin under the bookshelf, the wall
+behind the banner, the ground under the rubble.
+
+**The base-game palette shipped with the mod is corrected.** It was recorded
+before that rule existed, so it carried the checker's colour for 22 blocks, and a
+dedicated server seeds from it — which is why the white survived on servers that
+had never been sent a palette by a client. Those 22 entries now say what they
+mean, which is that this recording has no colour for them. They are exactly the
+entries whose recorded colour was the checker's own average, and nothing else was
+touched.
+
+**Chiselled blocks are resolved to their material before the palette is asked
+whether they show**, rather than after. The shell's only texture was the checker,
+so the palette now rightly says it draws nothing — asked in the old order, the
+column search would have walked past every ruin wall in the world and recorded
+the ground beneath it.
+
+**Snow-covered chiselled blocks are resolved to their stone as well.** They were
+left alone while the shell still had a colour, on the grounds that snow is what
+somebody looking down sees. The colour it had was the checker rather than snow,
+and a ruin drawn in white against snow cannot be seen at all.
+
+## 0.35.2
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared. Ruins
+already on the map keep their old colour until the chunks holding them are
+exported again — `/witchlight export` does that for everything loaded, so
+standing near one and running it repaints it.
+
+**Ruins no longer draw as white patches.** A chiselled block is a shell: the
+shape and the material both live in the block entity beside it, and the world
+reports the same `chiseledblock` whether it was cut from granite or from
+cobblestone. The palette can only answer for the block it is handed, and that one
+has no texture of its own — so it answered near-white, and every ruin on the map
+was a white patch on ground that was otherwise the right colour.
+
+What a chiselled block is made of is now asked of the block entity, which is the
+only thing that knows, and the game's own `GetMajorityMaterialId` is what answers
+— it is already the question a map pixel is asking. The material is chosen from
+the ones the palette can paint, so a block chiselled partly out of something
+invisible draws as the part that shows. A chiselled block whose entity cannot be
+read is drawn the way it was before rather than as a hole.
+
+Snow-covered chiselled blocks keep the white. Snow lying over the chiselling is
+what somebody looking down actually sees.
+
+**The cost falls on ruins alone.** Which block ids are chiselled is read off the
+block list once, when the world finishes loading, so every column that is not a
+ruin costs one lookup in a set of a dozen ids and no block entity read at all.
+
+**`/witchlight status` says how many kinds of chiselled block it is resolving**,
+which is how to tell the feature is running at all.
+
+**Clicking a ruin on the map now names the stone rather than the chiselled
+block.** One id is stored per column and it is now the material's, so the readout
+follows the colour. That is the trade for not changing the stored format.
+
+## 0.35.1
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and there is
+nothing to edit.
+
+**The map service's own log could be replaced while another thread was writing
+to it.** Everything the service says arrives on a threadpool thread, from the
+process's output, while a start comes off the game thread — and the writer was
+published outside the lock that every write to it already took, so it was
+reachable before it had been told to flush. A start that followed a service which
+had fallen over on its own also left the previous writer holding its file handle.
+Both are now done under that lock.
+
+**A stop somebody asked for could be reported as the service falling over.** The
+flag saying which kind of stop this is was written on the game thread and read on
+whichever thread the exit event arrived on, with nothing making the write visible
+to the read.
+
+**One outage could be complained about three times.** Players, markers and the
+world clock post independently and at the same time, and each checked and set the
+shared "already said" flag without holding anything, so two feeds failing in the
+same second could each say so. The health lines `/witchlight status` reads were
+written by those same threads and read by the game thread. Both now sit behind one
+lock — the log line itself is still written outside it.
+
+**Four constructors that did nothing but assign their parameters are now primary
+constructors.** No behaviour change. The other four in the mod stay as they are:
+their constructors are private on purpose, funnelling construction through a
+factory that checks something first, and a primary constructor cannot be private.
+
+## 0.35.0
+
+**Deploy note:** both halves, upgraded together. A server running Rustbound Magic
+gets the mana and magic bars on the next restart, with nothing to edit.
+
+**A settings file with no `[bars]` section now means the two the service writes
+into a fresh one**, rather than meaning none. Every server already running had a
+file written before that section existed, so every one of them sent no bars and
+the map's Bar display section had nothing to build itself from — a feature that
+looked broken and was only unasked. `[commands]` has read an absent table as its
+defaults since it was added; this is the same rule, and the two are now the only
+two tables so it is worth stating once: **a table nobody has written is the
+defaults, and a table somebody has emptied is none.**
+
+## 0.34.0
+
+**Deploy note:** both halves, upgraded together. A `[bars]` entry gains an
+optional fifth part and an existing one keeps working without it.
+
+**A bar can say which mod it came from**, so the map can group the switches it
+offers for them. It cannot be worked out: an entity attribute is a name and a
+number, and the game keeps no record of what wrote it. So an entry names its
+group, and where it does not this looks for an installed mod whose id appears in
+the attribute's own name — which answers for a mod that names its attributes
+after itself and for no other. Rustbound Magic's
+`entitybehavior-resource-currentmana_rm` names nothing, which is why the entries
+that ship carry `Rustbound Magic` outright.
+
+## 0.33.0
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared. A server
+running Rustbound Magic gets the mana and magic bars once its settings file has a
+`[bars]` section — the service writes one into a fresh file, and an existing file
+keeps what it has until `witchlight -c <file> -S` rewrites it.
+
+**A player's card can carry whatever else a server gives them.** A mod that gives
+players mana, stamina or a level keeps it on the player's own entity, in the same
+watched attributes the game keeps health and hunger in — and this mod is already
+holding that object to read those two. So the numbers travel to the map without
+this referencing any mod, compiling against one, or breaking when one is
+uninstalled: an operator names the attributes in `[bars]` and this reads whatever
+is under them.
+
+The kind of number is read off the attribute rather than assumed, because the
+game's own readers answer their default for an attribute of the wrong kind and a
+mod is free to keep mana as an int and the experience toward the next level as a
+float — which is exactly what Rustbound Magic does.
+
+**A bar is drawn only for a player who has one.** An attribute that is not there,
+or one whose maximum is still zero, is a player this does not apply to, and no bar
+is the honest picture of that. A mage who has spent their last mana still has a
+bar, at empty: having none and having none left are different sentences.
+
+## 0.32.0
+
+**Deploy note:** both halves, upgraded together. The palette is rebuilt on the
+first start and the colours of branchy leaves, reeds and a few hundred other
+plants move, so the tiles holding them redraw once. No map is cleared.
+
+**Branchy leaves and reed beds were drawn near-black.** Both came out within a
+few shades of the colour this map paints ground nobody has ever walked into, and
+for two different reasons that met in the same place.
+
+A block with nothing to say about which of its textures faces up was coloured
+from whichever its own dictionary listed first — the game's own rule, and an
+arbitrary one. Branchy leaves list `branch` before their leaves, and a branch is
+the one thing on that block nobody looking down at a tree can see: every branchy
+tree took the colour of the twig hidden under it, `#483a1e`, and then had the
+leaf tint multiplied onto it. The texture that covers most of the block is the
+one that stands for it now, which for branchy leaves is the leaf mask the plain
+ones already use — the two are the same colour again.
+
+And a block's shape was only ever asked when its own textures answered nothing.
+A reed declares two textures, both a seed head covering three per cent of the
+square, with the whole plant in its shape file — so the seed head answered and
+the shape was never asked. The two are weighed against each other now, and what
+covers more of the block wins.
+
+**The map's white blobs were the game's missing-texture checker.** The shape
+`block/basic/cube` declares `all: unknown`, which is the placeholder the game
+draws when a texture is absent: white, and opaque over the whole square.
+Averaged as though it were a texture it is the loudest thing in any shape that
+uses it, and it is why `game:air` has been carrying the colour `#fff9f9` in every
+palette ever built here — so a fresh map had white blobs across it wherever a
+chunk had not finished loading. It is a placeholder for a texture rather than a
+texture, and it is skipped. Air now records what it is, which is a block that
+draws nothing.
+
+## 0.31.0
+
+**Deploy note:** both halves, upgraded together. No map is cleared and no palette
+is thrown away. Columns are re-read as their chunks load, so the specks fill in on
+their own rather than needing an export.
+
+**A preset now names a family of blocks rather than one of them.** A block code
+carries its variant as a number — `game:tallgrass-3`, `game:leaves-grown7-oak`,
+`game:water-still-7` — so a preset kept against the code answered for one stage of
+grass out of eight. Keeping a preset for grass meant keeping it again seven more
+times, and changing it meant finding all eight.
+
+The number is now where the wildcard goes by default, so the window opens on
+`game:leaves-grown*-oak` and one preset covers the lot. It is only a default: the
+star is a character in a text field, so move it, add another, or take it out to
+name one block exactly. `*` stands for any run of characters anywhere in the
+pattern, so `b1-b2-*` names `b1-b2-b3` and `b1-b2-c3` alike. The matching itself
+has always worked this way — what changes is what a preset starts out as, in the
+in-game window and on the map's own form both.
+
+**The map had black specks scattered through explored ground.** A large structure
+stands one real block beside a run of invisible placeholders, and the exporter
+walked down a column until it found something that was not air — which is a
+different question from finding something you can see. So a column stopped on a
+placeholder and recorded a block with nothing to draw where there was grass, and
+the map painted it the colour of a world nobody has ever walked into.
+
+The exporter now walks past anything that shows nothing, and what counts as
+showing is the palette's to say — it is the question the palette was built to
+answer, so it is not answered a second way. It is asked again on every export, so
+a better palette arriving from a client corrects what gets written as well as what
+gets coloured.
+
+**A palette from a client stopped saying which of its colourless blocks draw.**
+An entry with no colour means one of two things — the block draws nothing at all,
+or it draws something the sender could not colour — and only the sender's own
+assets can tell them apart. That fact was built on both sides and then dropped on
+the wire, so every colourless block in a client's palette arrived saying nothing:
+the server could no longer see a gap worth asking about, and air and those
+invisible placeholders read as blocks it knew nothing about. It travels now. A
+palette from a client older than this says nothing rather than saying "draws",
+which is what keeps it safe to take.
+
+## 0.30.1
+
+**Deploy note:** nothing in the mod changed. The version moves because the two
+halves are one release and carry one version — see the service's own 0.30.1, which
+is where the change is.
+
+## 0.30.0
+
+**Deploy note:** both halves, upgraded together. No map is cleared and no palette
+is thrown away. On the first start every colour the palette was missing is filled
+from the base game recording now shipped inside the mod, and the next admin to
+join is asked once whether those are the colours this server should show. A
+settings file written before this keeps working: an absent `[commands]` section
+means the defaults, which are what the mod was already enforcing.
+
+**A dedicated server draws a fully coloured map before anybody joins it.** Its
+install ships 46 block textures against a full game's 9,587, so the palette it
+built for itself coloured almost nothing and the map stayed flat until a player
+happened to turn up with this mod on — which on a quiet server is days, and on a
+server whose players do not run the mod is never. The base game's blocks look the
+same on every server there is, so their colours are a fact this mod can know
+before it is installed anywhere, and a recording of them now rides inside the
+assembly at 70 KiB compressed.
+
+Measured on a real dedicated server with no block textures at all: **13,936 of
+14,091 blocks coloured, no gaps, before a single player connected** — the same
+palette a full game install builds for itself. Rendering its first export reports
+`0% waiting on a colour`. The asking is left for what is genuinely unknowable from
+there: a mod's blocks, and a texture pack an admin has chosen.
+
+It is a seed and not an answer. It fills only what has no colour, so a colour this
+server worked out from its own assets always wins. `bake-palette.py` refreshes it
+from a real `palette.json`, and refuses one with a mod's blocks or a gap in it.
+
+**Air was drawn as a near-white block.** `game:air` has no textures, so nothing
+found one — and it carries the default cube shape it never draws, so the shape
+fallback averaged that cube and handed air the colour `#fff9f9`. The exporter
+writes air for a column whose chunk holds no terrain, which on a freshly seeded
+map is about half of it, so half a new map painted near-white instead of reading
+as ground nobody has been to. Any palette built from a full asset set has carried
+this since the shape fallback was added, which means every palette a client has
+ever sent. What the game itself says a block draws is now asked before any colour
+is looked for: `EnumDrawType.Empty` is recorded as drawing nothing, whatever a
+texture or a shape would have averaged to. In the base game it moves exactly one
+block, and that block is air.
+
+**Who may run each `wl` command is the operator's to decide.** It was fixed in the
+code — `login` and `mark` for anybody, everything else for an admin — with no way
+to say otherwise short of rebuilding. `[commands]` in `witchlight.conf` now says
+it, defaulting to what the old code did with two exceptions: asking a client for a
+palette or for the marker pictures no longer takes an admin. It never needed one.
+Whose colours win is decided when the answer arrives and not when the ask goes out,
+so requiring an admin to *ask* bought nothing and cost a map on every server whose
+operator does not play on it. Any privilege the game knows works in place of
+`admin` and `player`; a name it does not know is refused to everyone but an admin
+and said in the log, so a typo locks a command rather than opening it. `witchlight
+status` prints the table in force.
+
+**An admin is asked for the palette first, and asked once even when nothing is
+missing.** The server used to ask whoever was nearest the front of its player list
+— stable across a restart, so one player's client answered for the whole server
+for as long as they kept playing there. An admin in the room is now asked before
+anybody else, since theirs is the tileset the map should look like and a colour
+taken from a player is a colour their answer will only have to replace; where there
+is no admin, one of the others is picked at random.
+
+And a palette can be complete and still unsettled. A texture pack changes every
+colour on the map without changing a single block code, so a map drawn entirely
+from the recording above is a map nobody who could decide has decided about. The
+palette now records whether an admin's own assets settled it, and while none has,
+the first admin to join is asked. Their answer either matches what is stored — in
+which case nothing is written and nothing is redrawn — or replaces it. `status`
+says which of the two the map is in.
+
+## 0.29.1
+
+**Deploy note:** nothing in the mod changed. The version moves because the two
+halves are one release and carry one version — see the service's own 0.29.1, which
+is where the change is.
+
+## 0.29.0
+
+**Deploy note:** both halves, upgraded together. No map is cleared and no palette
+is thrown away. On the first start the palette is rewritten to say which of its
+colourless blocks actually draw, the chunks stored with a hole in them are queued
+to be read again as they load, and the server asks the next player for the colours
+it is missing. None of it needs a command.
+
+**Digging left holes on the map, and the only way to fill one was to have somebody
+send a palette by hand.** Two unrelated faults produced the same picture — the
+near-black the map paints ground nobody has ever explored — and neither of them
+was about the world having changed. On the test server they accounted for 244
+columns across 49 dug pits, every one of them somewhere a player had been working.
+
+**A colour the palette did not have was drawn as absence.** An entry with no colour
+meant two different things at once: a block that draws nothing, which is air and
+the invisible helpers, and a block whose colour the builder could not work out.
+The renderer could not tell them apart, so it painted both as unexplored ground.
+Bare soil is in the second group — `soil-*-none` is what grass becomes when it is
+dug off and what placed soil starts as — along with forest floor, peat, cob and
+raw clay. So the map went black in exactly the places the world had changed. The
+palette now records which kind of colourless each entry is, and the map draws a
+block waiting on a colour as bare earth, with the slope shading on it like any
+other terrain.
+
+**Nothing ever went looking for the missing colour.** A palette was asked for when
+it coloured less than 90% of the block registry, and a palette missing bare soil
+scored 98.5% — so a server whose map had holes in it was a server that considered
+its palette good enough, for ever, and `/witchlight palette` was the only way out.
+That question is now asked the other way round: a specific block this palette says
+draws something and has no colour for is worth asking about, however good the
+number is. Asked on the export beat as well as on join, since a colour the map has
+not got is not something a player fixes by rejoining.
+
+**And the asking stops on its own.** Each player is asked once, because one is all
+a player has to give — a client sends the whole of what its assets can colour, and
+the merge takes everything it could fill. Somebody who joins later has not been
+asked and may have the mod set that answers, so the map goes on repairing itself as
+people arrive, while a server where nobody can supply the last colour stops asking
+instead of going round the room for ever. What is still missing is named in the log
+and in `/witchlight status`, which is a report to make to the mod shipping those
+blocks rather than a command to run again here.
+
+**A pit deeper than eight blocks was stored as air.** The surface read starts at
+the rain height map, which marks where rain stops rather than where the ground is,
+and stepped down at most eight blocks looking for something real. A dug shaft is a
+column of air below where the sky still says the ground is, so anything deeper than
+that ran out of steps and stored air — which is drawn as unexplored ground. It
+steps all the way down now. The depth is paid by the columns that need it and no
+others: ordinary ground answers on the first or second read.
+
+**A hole already stored is read again.** Storing air is a reading that failed, not
+a fact about the world, and once stored nothing would ever have made the server
+look at that column again — the chunk was in the export, so loading it did not
+count as a change. The walk over the map at start now notes which chunks hold a
+column stored as air and leaves them out of what counts as exported, so the
+server's own `ChunkDirty` brings them back as they load. It asks this of bytes it
+has already decompressed to read the seasons, so a map with no holes in it pays
+nothing for the question.
+
+## 0.28.2
+
+**Deploy note:** the mod half only; the service stays at 0.28.1. Nothing is
+cleared, but the palette must be **rebuilt** for this to reach a map that already
+exists — run `/witchlight palette` and let an admin's client answer. Nothing
+happens on its own: the existing palette is complete enough that nobody is asked.
+
+**Dug and placed ground went black.** Bare soil — every `soil-*-none`, which is
+what grass becomes when it is dug off and what placed soil starts as — had no
+colour in the palette, and a column the palette knows but has no colour for is
+painted the same near-black as ground nobody has ever exported. So the map looked
+like it had stopped updating in exactly the places the world had changed, when
+what it was doing was drawing the new block faithfully in the only colour it had.
+
+**A texture being preferred is not the same as it having a colour in it.** The
+builder took the one texture the game would use for a block's map colour and gave
+up on the block if it drew nothing. A soil block wears its grass as a coverage
+layer and that layer is the preferred texture — correctly, or every meadow would
+be the colour of the dirt underneath — but on the grassless variant the layer is
+a file with all 2,048 pixels transparent. It is tried in turn now: the coverage
+layer, then the top face, then whatever else the block has, then its shape, until
+one of them actually draws something. Sixteen of the game's block textures are
+fully transparent, so soil was the visible case rather than the only one.
 
 ## 0.28.1
 

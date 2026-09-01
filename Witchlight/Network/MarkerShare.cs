@@ -20,7 +20,7 @@ public class SharedMarker
     [ProtoMember(3)] public double Y { get; set; }
     [ProtoMember(4)] public double Z { get; set; }
     [ProtoMember(5)] public string Title { get; set; } = "";
-    [ProtoMember(6)] public string Icon { get; set; } = "circle";
+    [ProtoMember(6)] public string Icon { get; set; } = Markers.PlainIcon;
     [ProtoMember(7)] public int Color { get; set; }
     [ProtoMember(8)] public string Owner { get; set; } = "";
 }

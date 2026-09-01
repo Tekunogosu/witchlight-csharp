@@ -50,7 +50,7 @@ public class MarkAsk
     [ProtoMember(7)] public bool UsePreset { get; set; }
 
     [ProtoMember(8)] public string Title { get; set; } = "";
-    [ProtoMember(9)] public string Icon { get; set; } = "circle";
+    [ProtoMember(9)] public string Icon { get; set; } = Markers.PlainIcon;
     [ProtoMember(10)] public string Color { get; set; } = "";
 
     /// <summary>

@@ -9,8 +9,8 @@ namespace Witchlight;
 public class LiveWaypoint
 {
     public string Title { get; set; } = "";
-    public string Icon { get; set; } = "circle";
-    public string Color { get; set; } = "#ffffff";
+    public string Icon { get; set; } = Markers.PlainIcon;
+    public string Color { get; set; } = Markers.WhiteHex;
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
@@ -151,7 +151,7 @@ public static class MarkerFeed
             waypoints.Add(new LiveWaypoint
             {
                 Title = waypoint.Title ?? "",
-                Icon = string.IsNullOrEmpty(waypoint.Icon) ? "circle" : waypoint.Icon,
+                Icon = Markers.Picture(waypoint.Icon),
                 Color = Markers.Hex(waypoint.Color),
                 X = Blocks.At(waypoint.Position.X),
                 Y = Blocks.At(waypoint.Position.Y),

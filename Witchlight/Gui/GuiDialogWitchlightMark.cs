@@ -52,7 +52,7 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
 
         _private = offer.Private == Mark.Private;
         _preset = offer.KeepPreset;
-        _picture = Offered(_pictures, offer.Icon, "circle");
+        _picture = Offered(_pictures, offer.Icon, Markers.PlainIcon);
         // The colour of the swatch that will be selected, rather than the one
         // that was offered. A colour the game does not have leaves the picker on
         // its first swatch, and a window showing one colour and holding another

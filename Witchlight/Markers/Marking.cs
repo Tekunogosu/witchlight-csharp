@@ -77,7 +77,7 @@ public static class Marking
             new Vec3d(ask.X, ask.Y, ask.Z),
             reply.Title,
             reply.Icon,
-            Markers.Packed(reply.Color) ?? White,
+            Markers.Packed(reply.Color) ?? Markers.White,
             pinned: false);
 
         if (waypoint is null)
@@ -114,7 +114,7 @@ public static class Marking
         var pattern = ask.Pattern.Trim();
         if (pattern.Length == 0)
         {
-            pattern = block.Code;
+            pattern = BlockPattern.Widened(block.Code);
         }
         if (pattern.Length == 0)
         {
@@ -163,9 +163,13 @@ public static class Marking
             BlockY = ask.BlockY,
             BlockZ = ask.BlockZ,
             Block = block.Name,
-            Pattern = block.Code,
-            Title = Trimmed(title),
-            Icon = Picture(preset?.Icon ?? ask.Icon),
+            // The block's variant number already widened into a wildcard, so one
+            // preset answers for a whole family rather than for the one stage of
+            // grass that happened to be underfoot. Somebody who wants the exact
+            // block takes the star back out.
+            Pattern = BlockPattern.Widened(block.Code),
+            Title = Markers.Title(title),
+            Icon = Markers.Picture(preset?.Icon ?? ask.Icon),
             Color = Colour(preset?.Color ?? ask.Color),
             Private = Mark.Says(kept),
             // What the window would open with, which is what this person set on
@@ -183,39 +187,14 @@ public static class Marking
         {
             return block.Name;
         }
-        return block.Code.Length > 0 ? block.Code : Unnamed;
+        return block.Code.Length > 0 ? block.Code : Markers.Unnamed;
     }
-
-    private static string Trimmed(string title)
-    {
-        var said = title.Trim();
-        if (said.Length == 0)
-        {
-            return Unnamed;
-        }
-        return said.Length > LongestTitle ? said[..LongestTitle] : said;
-    }
-
-    /// <summary>The picture to draw it with, or the game's own default.</summary>
-    private static string Picture(string icon) =>
-        string.IsNullOrWhiteSpace(icon) ? "circle" : icon.Trim();
 
     /// <summary>The colour as the map writes one, or white for anything that is
     ///  not six hex digits behind a hash.</summary>
     private static string Colour(string? color)
     {
         var said = (color ?? "").Trim().ToLowerInvariant();
-        return Markers.Packed(said) is null ? WhiteHex : said;
+        return Markers.Packed(said) is null ? Markers.WhiteHex : said;
     }
-
-    /// <summary>What the game server names an unnamed marker. The map's own form
-    ///  asks for this same word — three programs agree on it.</summary>
-    private const string Unnamed = "Marker";
-
-    /// <summary>The most a marker's name may be. Longer is a paragraph.</summary>
-    private const int LongestTitle = 128;
-
-    private const string WhiteHex = "#ffffff";
-
-    private static readonly int White = Markers.Packed(WhiteHex)!.Value;
 }

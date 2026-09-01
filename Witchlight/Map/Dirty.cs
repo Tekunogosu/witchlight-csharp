@@ -49,16 +49,7 @@ public sealed class DirtyColumns
     }
 
     /// <summary>Marks these columns whatever their history, which is what a forced export wants.</summary>
-    public void MarkAll(IEnumerable<(int, int)> columns)
-    {
-        lock (_gate)
-        {
-            foreach (var column in columns)
-            {
-                _dirty.Add(column);
-            }
-        }
-    }
+    public void MarkAll(IEnumerable<(int, int)> columns) => AddAll(_dirty, columns);
 
     /// <summary>
     /// Notes columns that were already in memory before anything was watching.
@@ -96,16 +87,7 @@ public sealed class DirtyColumns
     /// them again is not mistaken for a change. Called once at start with what a
     /// previous run left behind.
     /// </summary>
-    public void Seed(IEnumerable<(int, int)> exported)
-    {
-        lock (_gate)
-        {
-            foreach (var column in exported)
-            {
-                _exported.Add(column);
-            }
-        }
-    }
+    public void Seed(IEnumerable<(int, int)> exported) => AddAll(_exported, exported);
 
     /// <summary>
     /// Hands over the waiting columns and clears them. Anything marked while the
@@ -126,16 +108,7 @@ public sealed class DirtyColumns
     /// Puts columns back, for an export that failed or that found a chunk not yet
     /// ready to read.
     /// </summary>
-    public void Restore(IEnumerable<(int, int)> columns)
-    {
-        lock (_gate)
-        {
-            foreach (var column in columns)
-            {
-                _dirty.Add(column);
-            }
-        }
-    }
+    public void Restore(IEnumerable<(int, int)> columns) => AddAll(_dirty, columns);
 
     /// <summary>
     /// Gives up on columns that left memory before they could be read, by
@@ -147,25 +120,37 @@ public sealed class DirtyColumns
     /// Loading it again raises ChunkDirty, and with no record of having exported
     /// it that counts as a change.
     /// </summary>
-    public void Defer(IEnumerable<(int, int)> columns)
+    public void Defer(IEnumerable<(int, int)> columns) => RemoveAll(_exported, columns);
+
+    /// <summary>Records that these columns are now in the export on disk.</summary>
+    public void Exported(IEnumerable<(int, int)> columns) => AddAll(_exported, columns);
+
+    /// <summary>
+    /// Puts columns into one of the two sets, under the lock.
+    ///
+    /// Four of the methods above were this, written out four times, and each of
+    /// them is worth its own name: what a caller means by seeding, restoring and
+    /// exporting are three different things and only the bodies were the same.
+    /// </summary>
+    private void AddAll(HashSet<(int, int)> into, IEnumerable<(int, int)> columns)
     {
         lock (_gate)
         {
             foreach (var column in columns)
             {
-                _exported.Remove(column);
+                into.Add(column);
             }
         }
     }
 
-    /// <summary>Records that these columns are now in the export on disk.</summary>
-    public void Exported(IEnumerable<(int, int)> columns)
+    /// <summary>And the other direction, for the one caller that takes them out.</summary>
+    private void RemoveAll(HashSet<(int, int)> from, IEnumerable<(int, int)> columns)
     {
         lock (_gate)
         {
             foreach (var column in columns)
             {
-                _exported.Add(column);
+                from.Remove(column);
             }
         }
     }

@@ -51,7 +51,7 @@ public static class SharedServer
                 Y = waypoint.Position.Y,
                 Z = waypoint.Position.Z,
                 Title = waypoint.Title ?? "",
-                Icon = string.IsNullOrEmpty(waypoint.Icon) ? "circle" : waypoint.Icon,
+                Icon = Markers.Picture(waypoint.Icon),
                 Color = waypoint.Color,
                 Owner = Markers.OwnerName(api, waypoint.OwningPlayerUid),
             });

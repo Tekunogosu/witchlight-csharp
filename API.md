@@ -393,7 +393,7 @@ the file — the format has one owner and it is the service.
 
 | | Written | What it is |
 |---|---|---|
-| `palette.json` | at asset load, or when a client sends one | every block: id, average colour, which colour maps tint it |
+| `palette.json` | at asset load, or when a client sends one | every block: id, average colour or which kind of colourless it is, which colour maps tint it |
 | `colormaps/*.png` | at asset load | the game's climate and season lookup images |
 | `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s | the surface of every chunk exported so far |
 | `icons/{name}.svg` | at asset load, or when a client sends them | the picture each marker is drawn with |

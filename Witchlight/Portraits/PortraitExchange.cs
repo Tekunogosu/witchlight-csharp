@@ -21,7 +21,7 @@ namespace Witchlight;
 /// ones, so how often one may arrive is answered here and how large it may be is
 /// answered where it is filed.
 /// </summary>
-public sealed class PortraitExchange
+public sealed class PortraitExchange(ICoreServerAPI api, string exports)
 {
     /// <summary>
     /// How long after a join before a player is asked to draw themselves.
@@ -42,20 +42,14 @@ public sealed class PortraitExchange
     /// </summary>
     private const int AnswerWindowMs = 60000;
 
-    private readonly ICoreServerAPI _api;
-    private readonly string _exports;
+    private readonly ICoreServerAPI _api = api;
+    private readonly string _exports = exports;
 
     /// <summary>Who has been asked for a picture and not yet answered.</summary>
     private readonly Recent _asked = new(AnswerWindowMs);
 
     /// <summary>When each player's last unasked-for picture arrived.</summary>
     private readonly Recent _taken = new(Portraits.FloorMs);
-
-    public PortraitExchange(ICoreServerAPI api, string exports)
-    {
-        _api = api;
-        _exports = exports;
-    }
 
     /// <summary>
     /// Asks a player who has just joined to draw themselves, after a pause.

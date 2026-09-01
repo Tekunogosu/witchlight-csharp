@@ -21,12 +21,30 @@ public class PaletteEntry
     public int Id { get; set; }
 
     /// <summary>
-    /// Average colour, or null for a block with nothing to draw — air, an
-    /// invisible helper, a shape-only block. Recorded either way so the renderer
-    /// can tell "nothing here" from "a block I have never heard of".
+    /// Average colour, or null for a block this palette cannot draw. Recorded
+    /// either way so the renderer can tell "nothing here" from "a block I have
+    /// never heard of".
     /// </summary>
     [JsonProperty(NullValueHandling = NullValueHandling.Include)]
     public string? Rgb { get; set; }
+
+    /// <summary>
+    /// Which kind of colourless this is: true where the block genuinely draws
+    /// nothing — air, an invisible helper — and false where it draws something
+    /// the builder could not work out a colour for.
+    ///
+    /// Null on an entry that has a colour, and on every entry of a palette
+    /// written before this existed, which is why it is nullable rather than a
+    /// plain bool: a reader must be able to tell "this palette says nothing about
+    /// it" from "this palette says it draws".
+    ///
+    /// The two used to be one state, and the renderer painted both of them the
+    /// same near-black it paints ground nobody has explored. So a block whose
+    /// colour was missed — bare soil, forest floor, the ground under grass — read
+    /// on the map as a hole in the world exactly where somebody had been digging.
+    /// </summary>
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public bool? Invisible { get; set; }
 
     /// <summary>Name of the climate colour map, when the block is climate tinted.</summary>
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
@@ -61,6 +79,23 @@ public class Palette
     public string Source { get; set; } = "server";
 
     /// <summary>
+    /// Whether an admin's own assets have settled these colours.
+    ///
+    /// A palette is a claim about what the world looks like, and two players can
+    /// make different ones honestly: a texture pack changes every colour on the
+    /// map without changing a single block code, so a palette built from one is
+    /// correct for the person who sent it and wrong for the server. The colours
+    /// this mod ships and the ones an ordinary player fills a gap with are both
+    /// good enough to draw with and neither is anybody's decision.
+    ///
+    /// So the map takes an admin's as the one it should look like, and this is
+    /// how it remembers whether it has one yet. False here is what makes the
+    /// server ask the next admin to join, once, whatever the coverage says —
+    /// see <see cref="PaletteExchange"/>.
+    /// </summary>
+    public bool FromAdmin { get; set; }
+
+    /// <summary>
     /// The server's own mod set when this was written. Not part of the shared
     /// fingerprint — a client could never match it — but a change here means the
     /// textures may have moved under the same block ids.
@@ -75,6 +110,25 @@ public class Palette
 
     /// <summary>Blocks that came out with a colour.</summary>
     public int Coloured => Blocks.Values.Count(entry => entry.Rgb is not null);
+
+    /// <summary>
+    /// The blocks this palette cannot draw but should be able to: they have
+    /// something to show and no colour was worked out for them.
+    ///
+    /// Sorted, because this set is compared against itself between one palette
+    /// and the next to decide whether asking again would achieve anything, and a
+    /// comparison of two dictionary orderings is a comparison of nothing.
+    ///
+    /// A palette written before <see cref="PaletteEntry.Invisible"/> existed says
+    /// nothing about which of its colourless blocks draw, so it reports none —
+    /// the old reading, and the one that cannot invent work for a server whose
+    /// palette is fine.
+    /// </summary>
+    public IReadOnlyList<string> Uncoloured => Blocks
+        .Where(pair => pair.Value.Rgb is null && pair.Value.Invisible == false)
+        .Select(pair => pair.Key)
+        .OrderBy(code => code, StringComparer.Ordinal)
+        .ToList();
 
     /// <summary>
     /// How much of the block registry came out with a colour. A dedicated server,
@@ -96,6 +150,10 @@ public class Palette
             Fingerprint = preferred.Fingerprint,
             ModStamp = preferred.ModStamp.Length > 0 ? preferred.ModStamp : filler.ModStamp,
             Source = preferred.Source,
+            // Either side having come from an admin is enough: the question this
+            // answers is whether an admin has ever settled these colours, and a
+            // gap filled from elsewhere afterwards does not unsettle them.
+            FromAdmin = preferred.FromAdmin || filler.FromAdmin,
             Textured = Math.Max(preferred.Textured, filler.Textured),
             Blocks = new Dictionary<string, PaletteEntry>(preferred.Blocks),
         };

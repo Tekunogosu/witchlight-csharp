@@ -23,7 +23,13 @@ namespace Witchlight;
 /// </summary>
 public static class Icons
 {
-    private const string AssetPath = "textures/icons/worldmap";
+    /// <summary>
+    /// Where the game keeps them. Public because both sides read the same shelf:
+    /// the server writes what it can see and a client sends what the server
+    /// cannot, and the path spelled once on each side is a path that can be
+    /// changed on one of them.
+    /// </summary>
+    public const string AssetPath = "textures/icons/worldmap";
 
     /// <summary>
     /// Writes every icon the server can see.
@@ -117,6 +123,32 @@ public static class Icons
 
     /// <summary>Where the icons land, beside everything else the map service reads.</summary>
     public static string DirectoryIn(string exports) => Path.Combine(exports, "icons");
+
+    /// <summary>
+    /// What is already on disk, by the names a waypoint would ask for.
+    ///
+    /// Here rather than beside the asking, because this file is what decides what
+    /// an icon is called and where one is kept, and a second reader of that
+    /// directory is a second thing that has to agree about both.
+    /// </summary>
+    public static List<string> Stored(string exports)
+    {
+        var dir = DirectoryIn(exports);
+        if (!Directory.Exists(dir))
+        {
+            return new List<string>();
+        }
+
+        var names = new List<string>();
+        foreach (var path in Directory.GetFiles(dir, "*.svg"))
+        {
+            if (Path.GetFileNameWithoutExtension(path) is { Length: > 0 } name)
+            {
+                names.Add(name);
+            }
+        }
+        return names;
+    }
 
     /// <summary>
     /// The name a waypoint would use for this file, or null if it cannot be one.

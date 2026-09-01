@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using Newtonsoft.Json.Linq;
@@ -264,24 +265,42 @@ public static class Settings
     /// <summary>
     /// One setting's value, by name, or null where the file does not say.
     ///
-    /// The one place that knows how a line is shaped.
+    /// The one place that knows how a line is shaped. A setting inside a table is
+    /// asked for by its whole name — `commands.export` — which is how it is
+    /// written in every other language that reads this format.
     /// </summary>
     public static string? Value(string key)
     {
         try
         {
+            // What the last table header renamed everything under it to. Without
+            // this a setting inside a table answers for a top-level setting of
+            // the same name, and the file now has both kinds.
+            var table = "";
+
             foreach (var line in File.ReadLines(Path))
             {
                 var text = line.Trim();
+                if (text.StartsWith('#'))
+                {
+                    continue;
+                }
+
+                if (text.StartsWith('[') && text.EndsWith(']'))
+                {
+                    table = text[1..^1].Trim() + ".";
+                    continue;
+                }
+
                 var at = text.IndexOf('=');
-                if (text.StartsWith('#') || at < 0)
+                if (at < 0)
                 {
                     continue;
                 }
 
                 // The whole key, not a prefix of one: a setting named
                 // `announce_url` must not answer for `announce`.
-                if (text[..at].Trim().Equals(key, StringComparison.Ordinal))
+                if ((table + text[..at].Trim()).Equals(key, StringComparison.Ordinal))
                 {
                     return Said(text[(at + 1)..]);
                 }
@@ -294,6 +313,92 @@ public static class Settings
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Whether the file has this table at all, however empty it is.
+    ///
+    /// The difference matters wherever an absent table means the defaults: a
+    /// settings file written before a table existed says nothing about it and
+    /// should behave as the defaults do, while a table somebody has emptied on
+    /// purpose is them saying they want none of it. Asked apart from reading it,
+    /// because "nothing in it" is the same answer to both and the wrong one to
+    /// one of them.
+    /// </summary>
+    /// <summary>
+    /// Every setting inside one table, in the order the file gives them.
+    ///
+    /// The reader above answers one question by name, which is the whole of what
+    /// a setting with a known name needs. A table whose keys are the operator's
+    /// own — the bars a player's card carries — cannot be asked that way: what
+    /// is wanted is everything in it, and the order they were written in, since
+    /// that is the order they will be drawn in.
+    /// </summary>
+    /// <summary>
+    /// Whether the file has this table at all, however empty it is.
+    ///
+    /// The difference matters wherever an absent table means the defaults: a
+    /// settings file written before a table existed says nothing about it and
+    /// should behave as the defaults do, while a table somebody has emptied on
+    /// purpose is them saying they want none of it. Asked apart from reading it,
+    /// because "nothing in it" is the same answer to both and the wrong one to
+    /// one of them.
+    /// </summary>
+    public static bool HasTable(string table)
+    {
+        try
+        {
+            foreach (var line in File.ReadLines(Path))
+            {
+                var text = line.Trim();
+                if (text.StartsWith('[') && text.EndsWith(']')
+                    && text[1..^1].Trim().Equals(table, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Unreadable settings are the service's to complain about.
+        }
+
+        return false;
+    }
+
+    public static IEnumerable<(string Key, string Said)> Table(string table)
+    {
+        var found = new List<(string, string)>();
+        try
+        {
+            var inside = false;
+            foreach (var line in File.ReadLines(Path))
+            {
+                var text = line.Trim();
+                if (text.StartsWith('#'))
+                {
+                    continue;
+                }
+
+                if (text.StartsWith('[') && text.EndsWith(']'))
+                {
+                    inside = text[1..^1].Trim().Equals(table, StringComparison.Ordinal);
+                    continue;
+                }
+
+                var at = text.IndexOf('=');
+                if (inside && at > 0)
+                {
+                    found.Add((text[..at].Trim(), Said(text[(at + 1)..])));
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Unreadable settings are the service's to complain about.
+        }
+
+        return found;
     }
 
     /// <summary>

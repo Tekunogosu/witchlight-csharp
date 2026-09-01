@@ -38,9 +38,6 @@ public sealed class ColumnSet
 /// <summary>Reads the surface out of loaded chunks.</summary>
 public static class ColumnPump
 {
-    /// <summary>How far below the rain height to look for a real block.</summary>
-    private const int MaxDrop = 8;
-
     /// <summary>
     /// Where a chunk sits in the year, as the game reckons it, rounded to the
     /// month. Position matters: the hemispheres are in opposite seasons.
@@ -160,15 +157,14 @@ public static class ColumnPump
         ICoreServerAPI api,
         string dir,
         IReadOnlyCollection<(int, int)> wanted,
-        IReadOnlyCollection<(int, int)> regions)
+        IReadOnlyCollection<(int, int)> regions,
+        System.Func<int, bool> shows,
+        Microblocks chiselled)
     {
         var edge = api.WorldManager.ChunkSize;
         var area = edge * edge;
 
-        var blockIds = new ushort[area];
-        var heights = new short[area];
-        var temperature = new byte[area];
-        var rainfall = new byte[area];
+        var surface = new Surface(area);
 
         var known = new Dictionary<(int, int), byte[]>();
         foreach (var (rx, rz) in regions)
@@ -203,8 +199,8 @@ public static class ColumnPump
                 continue;
             }
 
-            Read(api, cx, cz, edge, mapChunk, blockIds, heights, temperature, rainfall);
-            var record = Encode(area, blockIds, heights, temperature, rainfall);
+            Read(api, cx, cz, edge, mapChunk, surface, shows, chiselled);
+            var record = surface.Record();
             reread++;
 
             // Any block moving marks a chunk dirty and most of those are
@@ -271,26 +267,56 @@ public static class ColumnPump
         return seasons;
     }
 
-    /// <summary>Packs one chunk's columns into the record the format stores.</summary>
-    private static byte[] Encode(
-        int area,
-        ushort[] blockIds,
-        short[] heights,
-        byte[] temperature,
-        byte[] rainfall)
+    /// <summary>
+    /// One chunk's surface, while it is being read and packed.
+    ///
+    /// Four parallel arrays were allocated by one method and threaded through two
+    /// others, which is four chances to hand one a length the others do not have
+    /// and no way for a reader to see that they are one thing. They are one
+    /// thing: what is on top of each column of one chunk, in the order the format
+    /// stores it. Reused across chunks, because an export walks hundreds of them
+    /// and the buffer is the same size every time.
+    /// </summary>
+    private sealed class Surface
     {
-        var record = new byte[area * 6];
-        for (var i = 0; i < area; i++)
+        private readonly ushort[] _blocks;
+        private readonly short[] _heights;
+        private readonly byte[] _temperature;
+        private readonly byte[] _rainfall;
+
+        public Surface(int area)
         {
-            var at = i * 6;
-            record[at] = (byte)(blockIds[i] & 0xff);
-            record[at + 1] = (byte)(blockIds[i] >> 8);
-            record[at + 2] = (byte)(heights[i] & 0xff);
-            record[at + 3] = (byte)((heights[i] >> 8) & 0xff);
-            record[at + 4] = temperature[i];
-            record[at + 5] = rainfall[i];
+            _blocks = new ushort[area];
+            _heights = new short[area];
+            _temperature = new byte[area];
+            _rainfall = new byte[area];
         }
-        return record;
+
+        /// <summary>What is on top of one column.</summary>
+        public void Set(int at, int block, int y, byte temperature, byte rainfall)
+        {
+            _blocks[at] = (ushort)block;
+            _heights[at] = (short)y;
+            _temperature[at] = temperature;
+            _rainfall[at] = rainfall;
+        }
+
+        /// <summary>Packs it into the record the format stores.</summary>
+        public byte[] Record()
+        {
+            var record = new byte[_blocks.Length * Regions.EntryBytes];
+            for (var i = 0; i < _blocks.Length; i++)
+            {
+                var at = i * Regions.EntryBytes;
+                record[at] = (byte)(_blocks[i] & 0xff);
+                record[at + 1] = (byte)(_blocks[i] >> 8);
+                record[at + 2] = (byte)(_heights[i] & 0xff);
+                record[at + 3] = (byte)((_heights[i] >> 8) & 0xff);
+                record[at + 4] = _temperature[i];
+                record[at + 5] = _rainfall[i];
+            }
+            return record;
+        }
     }
 
     /// <summary>
@@ -304,10 +330,9 @@ public static class ColumnPump
         int chunkZ,
         int edge,
         IMapChunk mapChunk,
-        ushort[] blockIds,
-        short[] heights,
-        byte[] temperature,
-        byte[] rainfall)
+        Surface surface,
+        System.Func<int, bool> shows,
+        Microblocks chiselled)
     {
         var accessor = api.World.BlockAccessor;
         var position = new BlockPos(0);
@@ -320,37 +345,79 @@ public static class ColumnPump
                 var worldX = chunkX * edge + dx;
                 var worldZ = chunkZ * edge + dz;
 
-                var y = (int)mapChunk.RainHeightMap[i];
+                var top = (int)mapChunk.RainHeightMap[i];
+                var y = top;
                 var id = 0;
 
                 // The rain height map marks where rain stops, which is commonly
                 // the air just above the ground. Step down until something is
                 // actually there, rather than mapping the sky.
-                for (var drop = 0; drop <= MaxDrop && y - drop >= 0; drop++)
+                //
+                // Something that *shows*, not merely something that is not air.
+                // A large structure stands one real block beside a run of
+                // invisible placeholders, and a barrel or a door has its own; a
+                // search that stopped at the first non-air block recorded one of
+                // those and the map drew a speck of nothing in the middle of
+                // grass. What counts as showing is the palette's to say — see
+                // `PaletteExchange.Shows`.
+                //
+                // All the way down, rather than a few blocks. A dug shaft is a
+                // column of air below where the sky still says the ground is, and
+                // a search that gave up after eight of them recorded air — which
+                // the map paints as ground nobody has ever explored. So every pit
+                // a player dug deeper than eight blocks became a hole on the map
+                // that no amount of exporting would fill.
+                //
+                // The depth is paid by the columns that need it and by no others:
+                // ordinary ground answers on the first or second read, and only an
+                // open shaft costs its own depth.
+                for (; y >= 0; y--)
                 {
-                    position.Set(worldX, y - drop, worldZ);
-                    id = accessor.GetBlockId(position);
-                    if (id != 0)
+                    position.Set(worldX, y, worldZ);
+                    var here = accessor.GetBlockId(position);
+                    if (here == 0)
                     {
-                        y -= drop;
+                        continue;
+                    }
+
+                    // What it is made of, where what it is does not say. A
+                    // chiselled block is a shell with its material in the block
+                    // entity beside it — see `Microblocks`. Everything else
+                    // answers with itself.
+                    //
+                    // Asked before the palette is, not after. The shell's only
+                    // texture is the game's missing-texture checker, so the
+                    // palette rightly says it draws nothing; asking that first
+                    // would walk past every ruin wall in the world and record the
+                    // ground under it. What has to show is the material.
+                    var drawn = chiselled.MaterialAt(accessor, position, here, shows);
+                    if (shows(drawn))
+                    {
+                        id = drawn;
                         break;
                     }
                 }
 
-                position.Set(worldX, y, worldZ);
-                blockIds[i] = (ushort)id;
-                heights[i] = (short)y;
-
-                var climate = accessor.GetClimateAt(position, EnumGetClimateMode.WorldGenValues);
-                if (climate is null)
+                if (id == 0)
                 {
-                    temperature[i] = 128;
-                    rainfall[i] = 128;
-                    continue;
+                    // Nothing anywhere beneath the sky here, which is no ordinary
+                    // column. Recorded where the sky said rather than below the
+                    // world, so the height stays a number the map can draw with.
+                    y = top;
                 }
 
-                temperature[i] = (byte)Climate.DescaleTemperature(climate.Temperature);
-                rainfall[i] = (byte)Math.Clamp((int)(climate.Rainfall * 255f), 0, 255);
+                position.Set(worldX, y, worldZ);
+
+                // A column whose climate cannot be read is drawn at the middle of
+                // both scales rather than left at whatever the last chunk put
+                // there — the buffer is reused, so nothing here may be skipped.
+                var climate = accessor.GetClimateAt(position, EnumGetClimateMode.WorldGenValues);
+                surface.Set(
+                    i,
+                    id,
+                    y,
+                    climate is null ? (byte)128 : (byte)Climate.DescaleTemperature(climate.Temperature),
+                    climate is null ? (byte)128 : (byte)Math.Clamp((int)(climate.Rainfall * 255f), 0, 255));
             }
         }
     }

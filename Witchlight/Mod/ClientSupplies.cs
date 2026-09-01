@@ -132,7 +132,7 @@ public partial class WitchlightClient
         }
 
         var icons = new List<(string Name, byte[] Svg)>();
-        foreach (var asset in capi.Assets.GetMany("textures/icons/worldmap", null, true))
+        foreach (var asset in capi.Assets.GetMany(Icons.AssetPath, null, true))
         {
             if (asset?.Location is null || asset.Data is null || asset.Data.Length == 0)
             {

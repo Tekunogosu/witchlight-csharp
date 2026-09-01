@@ -76,7 +76,8 @@ public partial class WitchlightSystem : ModSystem
 
         // Version first, and on every start: the quickest way to tell a deployed
         // mod from the one you meant to deploy. The map service prints its own for
-        // the same reason, and the two must match on minor version.
+        // the same reason, and the two are always the same number — they ship as
+        // one archive, so two different numbers in one log is a mis-deployment.
         api.Logger.Notification(
             "[witchlight] {0} ready, exporting every {1}s", Mod.Info.Version, ExportIntervalMs / 1000);
     }
@@ -149,7 +150,10 @@ public partial class WitchlightSystem : ModSystem
         api.Event.PlayerNowPlaying += player => Doing("greeting a player", () =>
         {
             SharedServer.SendTo(api, player, _visibility);
-            _palettes?.AskIfNeeded(player);
+            // The whole room rather than the player who just joined: an admin
+            // arriving is the moment to ask an admin, and an admin already
+            // playing is a better answer than the player who walked in.
+            _palettes?.AskAround(api.World.AllOnlinePlayers.OfType<IServerPlayer>());
             _icons?.AskForMissing(player);
             _portraits?.AskOnceSettled(player, Doing);
             Greet(player, GreetTries);
@@ -208,7 +212,11 @@ public partial class WitchlightSystem : ModSystem
             // writes them on a first run.
             _serviceProcess = ServiceProcess.Prepare(api, Mod);
             OpenTheMap(api);
-            _exporter = new Exporter(api, Settings.Exports);
+            // The palette is what says whether a block shows anything, so the
+            // exporter reads it through the field rather than being handed a
+            // copy: a palette that arrives from a client an hour from now has to
+            // correct what gets exported as well as what gets coloured.
+            _exporter = new Exporter(api, Settings.Exports, id => _palettes?.Shows(id) ?? true);
             _exporter.KeepWorldFacts();
             _visibility = Visibility.Read(api);
             StartService();
@@ -232,6 +240,16 @@ public partial class WitchlightSystem : ModSystem
         // repeating it keeps the map current without anyone typing a command.
         api.Event.RegisterGameTickListener(
             Every("exporting", () => Export("timer")), ExportIntervalMs);
+
+        // A colour the map has not got is not something a player fixes by
+        // rejoining, and on a small server nobody may rejoin for days — so the
+        // ask cannot only ride the join. On the export beat because that is the
+        // slowest clock here; what keeps it to one ask every couple of minutes,
+        // and to one ask per player per palette, is in `AskAround`.
+        api.Event.RegisterGameTickListener(
+            Every("asking for a palette", () =>
+                _palettes?.AskAround(api.World.AllOnlinePlayers.OfType<IServerPlayer>())),
+            ExportIntervalMs);
 
         // Players move, so this goes far more often than the terrain — and it
         // goes over the socket rather than to a file, because a position is worth

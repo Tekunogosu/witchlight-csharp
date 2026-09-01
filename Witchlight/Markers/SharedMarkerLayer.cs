@@ -157,7 +157,7 @@ public sealed class SharedMarkerLayer
     /// </summary>
     private static string Label(SharedMarker marker)
     {
-        var title = string.IsNullOrEmpty(marker.Title) ? "Marker" : marker.Title;
+        var title = Markers.Title(marker.Title);
         return string.IsNullOrEmpty(marker.Owner) ? title : $"{title} ({marker.Owner})";
     }
 }

@@ -29,8 +29,8 @@ public class Wanted
     public string Uid { get; set; } = "";
 
     public string Title { get; set; } = "";
-    public string Icon { get; set; } = "circle";
-    public string Color { get; set; } = "#ffffff";
+    public string Icon { get; set; } = Markers.PlainIcon;
+    public string Color { get; set; } = Markers.WhiteHex;
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
@@ -46,24 +46,10 @@ public class Wanted
     public int Packed(int fallback) => Markers.Packed(Color) ?? fallback;
 
     /// <summary>The picture to draw it with, or the game's own default.</summary>
-    public string Picture => string.IsNullOrEmpty(Icon) ? "circle" : Icon;
+    public string Picture => Markers.Picture(Icon);
 
     /// <summary>What the marker is called, or something rather than nothing.</summary>
-    public string Named
-    {
-        get
-        {
-            var said = (Title ?? "").Trim();
-            if (said.Length == 0)
-            {
-                return "Marker";
-            }
-            return said.Length > LongestTitle ? said[..LongestTitle] : said;
-        }
-    }
-
-    /// <summary>The most a marker's name may be. Longer is a paragraph, not a name.</summary>
-    private const int LongestTitle = 128;
+    public string Named => Markers.Title(Title);
 }
 
 /// <summary>
@@ -199,7 +185,7 @@ public static class Pending
                 wanted.Position,
                 wanted.Named,
                 wanted.Picture,
-                wanted.Packed(White),
+                wanted.Packed(Markers.White),
                 pinned: false);
 
             if (waypoint is null)
@@ -284,6 +270,4 @@ public static class Pending
         return true;
     }
 
-    /// <summary>A marker whose colour did not survive the trip is drawn white.</summary>
-    private static readonly int White = Markers.Packed("#ffffff")!.Value;
 }

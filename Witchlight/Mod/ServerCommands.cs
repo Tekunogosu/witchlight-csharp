@@ -9,64 +9,64 @@ using Vintagestory.API.Server;
 namespace Witchlight;
 
 /// <summary>
-/// What an operator can type at the server, and what happens when they do.
+/// What a player can type at the server, and what happens when they do.
 ///
 /// The same class as the rest of the mod system rather than a type of its own: a
 /// command surface is a view of the whole system, and a separate type would only
 /// mean handing that type every field this one already has. What it is kept apart
 /// from is the wiring — nothing here decides when anything runs.
 ///
-/// Everything but `login` and `mark` is an operator's. Every player has their own
-/// markers and their own settings, so every player can ask for the link that
-/// reaches them and can mark the place they are standing in.
+/// Who may run which of them is not decided here either. Every subcommand is
+/// registered under the privilege the settings give it, which is one table in
+/// <see cref="Permissions"/> and one `[commands]` section in the settings file.
 /// </summary>
 public partial class WitchlightSystem
 {
     private void RegisterCommands(ICoreServerAPI api)
     {
+        // Read before a single command is declared, because the game bakes each
+        // one's privilege into its command table as it is registered.
+        Permissions.Settle(api.Logger);
+
         api.ChatCommands
             .Create(Commands.Name)
             .WithShortName(api)
             .WithDescription("Witchlight map server tools")
-            .RequiresPrivilege(Privilege.controlserver)
-            .BeginSubCommand("login")
-                .WithDescription("Send yourself a link to your own page of the map")
-                .RequiresPrivilege(Privilege.chat)
+            // The tree itself only lists what is under it, and each subcommand
+            // carries the privilege that actually decides anything. Asking for
+            // more than this here would hide `login` from the players it is for.
+            .RequiresPrivilege(Privilege.chat)
+            .BeginSubCommand(
+                Permissions.Login, "Send yourself a link to your own page of the map")
                 .RequiresPlayer()
                 .HandleWith(OnLogin)
             .EndSubCommand()
-            .BeginSubCommand("mark")
-                .WithDescription(
-                    "Mark where you are looking, using your preset for that block")
-                .RequiresPrivilege(Privilege.chat)
+            .BeginSubCommand(
+                Permissions.Mark, "Mark where you are looking, using your preset for that block")
                 .RequiresPlayer()
                 .HandleWith(OnMarkHere)
             .EndSubCommand()
-            .BeginSubCommand("export")
-                .WithDescription("Write the surface of every loaded chunk")
+            .BeginSubCommand(Permissions.Export, "Write the surface of every loaded chunk")
                 .HandleWith(OnExport)
             .EndSubCommand()
-            .BeginSubCommand("status")
-                .WithDescription("What has been exported, and where the palette came from")
+            .BeginSubCommand(
+                Permissions.Status, "What has been exported, and where the palette came from")
                 .HandleWith(OnStatus)
             .EndSubCommand()
-            .BeginSubCommand("service")
-                .WithDescription("The map service: `status`, `start` or `stop`")
+            .BeginSubCommand(Permissions.Service, "The map service: `status`, `start` or `stop`")
                 .WithArgs(api.ChatCommands.Parsers.OptionalWord("action"))
                 .HandleWith(OnService)
             .EndSubCommand()
-            .BeginSubCommand("portrait")
-                .WithDescription("Ask a player's client for a picture of their character")
+            .BeginSubCommand(
+                Permissions.Portrait, "Ask a player's client for a picture of their character")
                 .WithArgs(api.ChatCommands.Parsers.OptionalWord("player"))
                 .HandleWith(OnPortraitFetch)
             .EndSubCommand()
-            .BeginSubCommand("icons")
-                .WithDescription("Ask an admin's client for the marker pictures")
+            .BeginSubCommand(Permissions.Icons, "Ask a client for the marker pictures")
                 .WithArgs(api.ChatCommands.Parsers.OptionalWord("player"))
                 .HandleWith(OnIconFetch)
             .EndSubCommand()
-            .BeginSubCommand("palette")
-                .WithDescription("Ask an admin's client for a block colour palette")
+            .BeginSubCommand(Permissions.Palette, "Ask a client for a block colour palette")
                 .WithArgs(api.ChatCommands.Parsers.OptionalWord("player"))
                 .HandleWith(OnPaletteFetch)
             .EndSubCommand();
@@ -173,6 +173,7 @@ public partial class WitchlightSystem
         {
             $"version: {Mod.Info.Version}",
             $"exports: {Settings.Exports}",
+            Permissions.Describe(),
             Settings.PerWorld
                 ? $"filed: a directory per world, inside {Settings.MapData}"
                 : "filed: one map for this data path (per_world is off)",
@@ -181,9 +182,14 @@ public partial class WitchlightSystem
             // place: both halves have to be right, and neither is visible in game.
             WorldFacts.Describe(api, Settings.Exports),
             _serviceProcess?.Describe() ?? $"service: not run from here; settings at {Settings.Path}",
-            _palettes is { Wanted: true }
-                ? "wanted: a palette from a player's client"
-                : "wanted: nothing, the palette is good enough",
+            _palettes switch
+            {
+                { Gaps.Count: > 0 } exchange =>
+                    $"wanted: a palette from a player's client, for {exchange.Gaps.Count} block(s) "
+                    + "the map cannot draw",
+                { Wanted: true } => "wanted: a palette from a player's client",
+                _ => "wanted: nothing, the palette is good enough",
+            },
             _exporter?.Describe() ?? "terrain: not exporting yet",
             $"mapped: {_exporter?.Mapped ?? 0} chunks",
             $"markers: {MarkerFeed.All(api, _visibility).Count} saved on this server"
@@ -247,7 +253,7 @@ public partial class WitchlightSystem
     /// </summary>
     private TextCommandResult OnPortraitFetch(TextCommandCallingArgs args)
     {
-        return Asking(args, "name one who is online", admin: false, target =>
+        return Asking(args, Permissions.Portrait, target =>
         {
             _portraits?.Ask(target);
             return $"asked {target.PlayerName} to draw themselves";
@@ -256,7 +262,7 @@ public partial class WitchlightSystem
 
     private TextCommandResult OnIconFetch(TextCommandCallingArgs args)
     {
-        return Asking(args, "name an online admin", admin: true, target =>
+        return Asking(args, Permissions.Icons, target =>
         {
             // Everything, not only what is missing: this is the way back if an
             // icon on disk is wrong rather than absent.
@@ -271,7 +277,7 @@ public partial class WitchlightSystem
     /// </summary>
     private TextCommandResult OnPaletteFetch(TextCommandCallingArgs args)
     {
-        return Asking(args, "name an online admin", admin: true, target =>
+        return Asking(args, Permissions.Palette, target =>
         {
             _palettes?.AskAnyway(target);
             return $"asked {target.PlayerName} for a palette";
@@ -283,13 +289,17 @@ public partial class WitchlightSystem
     ///
     /// They differ in one line each and were three copies of the same twenty:
     /// find the player named, or the one who typed it; refuse if there is nobody
-    /// to ask; refuse if what is being asked for may only be taken from an admin
-    /// and this player is not one.
+    /// to ask; refuse if the player named may not be asked for this.
+    ///
+    /// Whom a thing may be taken from is the same question as who may ask for it,
+    /// so it is the same setting: a server that lets its players fetch a palette
+    /// lets its players be fetched from. What guards the map either way is what
+    /// is done with the answer — only an admin's replaces a colour somebody
+    /// already chose.
     /// </summary>
     private TextCommandResult Asking(
         TextCommandCallingArgs args,
-        string instead,
-        bool admin,
+        string command,
         System.Func<IServerPlayer, string> ask)
     {
         if (_sapi is not { } api)
@@ -308,14 +318,16 @@ public partial class WitchlightSystem
         if (target is null)
         {
             return TextCommandResult.Error(named is null
-                ? $"no player to ask — {instead}, or run this in game"
+                ? $"no player to ask — name {Permissions.Who(command)} who is online, "
+                  + "or run this in game"
                 : $"{named} is not online");
         }
 
-        if (admin && !target.HasPrivilege(Privilege.controlserver))
+        if (!Permissions.Holds(target, command))
         {
             return TextCommandResult.Error(
-                $"{target.PlayerName} is not an admin; that is only taken from admins");
+                $"{target.PlayerName} may not be asked for that — `commands.{command}` in "
+                + $"{Settings.Path} says it is taken from {Permissions.Who(command)}");
         }
 
         return TextCommandResult.Success(ask(target));

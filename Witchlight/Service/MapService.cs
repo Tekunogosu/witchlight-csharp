@@ -71,21 +71,15 @@ public sealed class MapService : IDisposable
     /// literal, and every method that reported on one took an `isPlayers` and
     /// branched on it twice.
     /// </summary>
-    private sealed class Feed
+    private sealed class Feed(string name, string path)
     {
         private int _sending;
 
-        public Feed(string name, string path)
-        {
-            Name = name;
-            Path = path;
-        }
-
         /// <summary>What to call it when something goes wrong.</summary>
-        public string Name { get; }
+        public string Name { get; } = name;
 
         /// <summary>Where it is posted.</summary>
-        public string Path { get; }
+        public string Path { get; } = path;
 
         /// <summary>What happened to the last post of this kind.</summary>
         public string Health { get; set; } = "nothing sent yet";
@@ -106,11 +100,33 @@ public sealed class MapService : IDisposable
     private readonly Feed _markers = new("markers", "/live/markers");
     private readonly Feed _world = new("world", "/live/world");
 
-    public string PlayersHealth => _players.Health;
+    public string PlayersHealth => HealthOf(_players);
 
-    public string MarkersHealth => _markers.Health;
+    public string MarkersHealth => HealthOf(_markers);
 
-    public string WorldHealth => _world.Health;
+    public string WorldHealth => HealthOf(_world);
+
+    /// <summary>What one feed last did, read from the thread that asked.</summary>
+    private string HealthOf(Feed feed)
+    {
+        lock (_reporting)
+        {
+            return feed.Health;
+        }
+    }
+
+    /// <summary>
+    /// The lock over what the last post of each kind did, and whether the fault
+    /// has been said out loud.
+    ///
+    /// Three feeds post at once, each on its own threadpool thread, and
+    /// `/witchlight status` reads the health lines from the game thread — so this
+    /// is state with three writers and a reader that is none of them. One lock
+    /// rather than one per feed, because "say it once" is a claim about all three
+    /// together: two feeds failing in the same second is one outage, and it was
+    /// the unguarded check on `_complained` that let both of them say so.
+    /// </summary>
+    private readonly object _reporting = new();
 
     private int _collecting;
     private readonly TimeSpan _resendMarkers;
@@ -146,7 +162,7 @@ public sealed class MapService : IDisposable
     /// nothing. Three callers asked this the same way and each spelled out the
     /// assignment back into the field.
     /// </summary>
-    private Endpoint? Where() => _endpoint ?? (_endpoint = Resolve());
+    private Endpoint? Where() => _endpoint ??= Resolve();
 
     /// <summary>
     /// Where to post, from the environment if an operator said, and otherwise from
@@ -208,7 +224,7 @@ public sealed class MapService : IDisposable
     /// does not depend on it — and the address goes with it, so the next ask
     /// reads where the next service bound.
     /// </summary>
-    private async Task<string?> Ask(string path, object body)
+    private async Task<string?> Ask(string path, object? body = null, bool quietly = false)
     {
         var endpoint = Where();
         if (endpoint is null)
@@ -218,32 +234,61 @@ public sealed class MapService : IDisposable
 
         try
         {
-            var asked = JsonConvert.SerializeObject(body);
-            using var content = new StringContent(asked, Encoding.UTF8, "application/json");
-            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + path)
-            {
-                Content = content,
-            };
-            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
-
-            var reply = await _client.SendAsync(message).ConfigureAwait(false);
-            if (reply.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                _endpoint = null;
-            }
-            if (!reply.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            return await reply.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var reply = await Reach(
+                endpoint, path, body is null ? null : JsonConvert.SerializeObject(body))
+                .ConfigureAwait(false);
+            return reply.IsSuccessStatusCode
+                ? await reply.Content.ReadAsStringAsync().ConfigureAwait(false)
+                : null;
         }
         catch (Exception error)
         {
+            // Its address goes with it, so the next ask reads where the next
+            // service bound.
             _endpoint = null;
-            _log.Warning("[witchlight] the map did not answer {0}: {1}", path, error.Message);
+            var said = "[witchlight] the map did not answer {0}: {1}";
+            if (quietly)
+            {
+                _log.Debug(said, path, error.Message);
+            }
+            else
+            {
+                _log.Warning(said, path, error.Message);
+            }
             return null;
         }
+    }
+
+    /// <summary>
+    /// One post to the service, carrying the word it wants, and whatever came
+    /// back.
+    ///
+    /// Everything this sends is this: a POST to an address the service published,
+    /// with a bearer token, where a refused token means the service restarted and
+    /// minted a new one — which is the same fix as a refused connection. That was
+    /// written out three times, and the dropping of the stale address was the
+    /// part each copy had its own chance to leave out.
+    ///
+    /// A body where there is one to send, already written as JSON: this is the
+    /// wire and nothing above it, so what a body is made of is settled before it
+    /// arrives here. Collecting markers asks for what the service is holding and
+    /// has nothing to say in the asking.
+    /// </summary>
+    private async Task<HttpResponseMessage> Reach(Endpoint endpoint, string path, string? json)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + path);
+        if (json is not null)
+        {
+            message.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        }
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
+
+        var reply = await _client.SendAsync(message).ConfigureAwait(false);
+        if (reply.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            _endpoint = null;
+        }
+        return reply;
     }
 
     /// <summary>
@@ -321,32 +366,11 @@ public sealed class MapService : IDisposable
 
         try
         {
-            var endpoint = Where();
-            if (endpoint is null)
-            {
-                return null;
-            }
-
-            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + "/markers/pending");
-            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
-
-            var reply = await _client.SendAsync(message).ConfigureAwait(false);
-            if (reply.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                _endpoint = null;
-            }
-            if (!reply.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            return await reply.Content.ReadAsStringAsync().ConfigureAwait(false);
-        }
-        catch (Exception error)
-        {
-            _endpoint = null;
-            _log.Debug("[witchlight] could not collect markers from the map: {0}", error.Message);
-            return null;
+            // Quietly: this rides the two-second tick, and a service that is down
+            // would otherwise say so thirty times a minute. The other three asks
+            // happen because somebody typed or pressed something and is owed the
+            // reason out loud.
+            return await Ask("/markers/pending", quietly: true).ConfigureAwait(false);
         }
         finally
         {
@@ -426,22 +450,9 @@ public sealed class MapService : IDisposable
 
     private async Task Send(Feed feed, Endpoint endpoint, string json)
     {
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
-        using var message = new HttpRequestMessage(HttpMethod.Post, endpoint.Url + feed.Path)
-        {
-            Content = content,
-        };
-        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Token);
-
-        var reply = await _client.SendAsync(message).ConfigureAwait(false);
+        using var reply = await Reach(endpoint, feed.Path, json).ConfigureAwait(false);
         if (!reply.IsSuccessStatusCode)
         {
-            // A rejected token means the service restarted and minted a new one,
-            // which is the same fix as a refused connection.
-            if (reply.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                _endpoint = null;
-            }
             Complain(feed, $"refused with {(int)reply.StatusCode}");
             return;
         }
@@ -452,24 +463,42 @@ public sealed class MapService : IDisposable
             _markersSentAt = DateTime.UtcNow;
         }
 
-        feed.Health = $"reaching {endpoint.Url}, {json.Length} bytes accepted";
-        if (_complained)
+        Recovered(feed, $"reaching {endpoint.Url}, {json.Length} bytes accepted");
+    }
+
+    /// <summary>Says it landed, and says so out loud only for the first one back.</summary>
+    private void Recovered(Feed feed, string what)
+    {
+        lock (_reporting)
         {
-            _log.Notification("[witchlight] the map service is taking live data again");
+            feed.Health = what;
+            if (!_complained)
+            {
+                return;
+            }
+
             _complained = false;
         }
+
+        // Said outside the lock: the decision is what has to be atomic, and a
+        // logger is somebody else's I/O to be holding a lock across.
+        _log.Notification("[witchlight] the map service is taking live data again");
     }
 
     /// <summary>Says it once, and says when it stops being true.</summary>
     private void Complain(Feed feed, string what)
     {
-        feed.Health = what;
-        if (_complained)
+        lock (_reporting)
         {
-            return;
+            feed.Health = what;
+            if (_complained)
+            {
+                return;
+            }
+
+            _complained = true;
         }
 
-        _complained = true;
         _log.Warning(
             "[witchlight] {0}: {1} — that half will not show on the map until it is back",
             feed.Name,

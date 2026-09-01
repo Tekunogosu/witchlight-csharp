@@ -117,6 +117,24 @@ if [ "$want_service" -eq 1 ] && [ ! -f "$service" ]; then
     exit 1
 fi
 
+# The two halves ship as one archive and are one release, so they carry one
+# version. Checked against the binary itself rather than against a second file
+# saying what it should be: the failure this catches is a mod rebuilt while the
+# service was not, which leaves a map whose page reports the version before last
+# — and, because the viewer's assets used to be addressed by that number, a
+# browser that never fetched the new ones at all.
+if [ "$want_service" -eq 1 ]; then
+    built=$("$service" --version 2>/dev/null | awk '{print $NF}')
+    if [ "$built" != "$version" ]; then
+        echo "package: the map service is $built and the mod is $version." >&2
+        echo "  They ship as one archive and must carry one version." >&2
+        echo "  Set version in $modinfo and in the service's Cargo.toml to match," >&2
+        echo "  then rebuild the service with: cargo build --release" >&2
+        echo "  service: $service" >&2
+        exit 1
+    fi
+fi
+
 # Every permissive licence in the service binary asks the same thing of a copy:
 # that the notice travel with it. Shipping the binary without one is the failure
 # this refuses to make quietly, so a missing notice stops the packaging exactly

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.IO.Compression;
 using System.Numerics;
@@ -58,8 +59,14 @@ public static class Regions
     /// <summary>Chunk x 4, chunk z 4, season 1, reserved 1.</summary>
     private const int RecordHeaderBytes = 10;
 
-    /// <summary>Block id 2, surface y 2, temperature 1, rainfall 1.</summary>
-    private const int EntryBytes = 6;
+    /// <summary>
+    /// Block id 2, surface y 2, temperature 1, rainfall 1.
+    ///
+    /// Public because the side that packs a record is not the side that reads
+    /// one, and it was spelled as a bare 6 over there — twice, in the two loops
+    /// that have to agree with this or write a file nothing can parse.
+    /// </summary>
+    public const int EntryBytes = 6;
 
     /// <summary>Which region a chunk belongs to. Negative coordinates floor, as they must.</summary>
     public static (int, int) Of(int chunkX, int chunkZ)
@@ -108,9 +115,7 @@ public static class Regions
         public static Header? Of(string path, int edge)
         {
             var data = Bytes(path);
-            if (data is null
-                || data.Length < HeaderBytes
-                || data[0] != 'M' || data[1] != 'S' || data[2] != 'Q' || data[3] != 'R'
+            if (!IsRegion(data)
                 || BitConverter.ToUInt16(data, 4) != Version
                 || BitConverter.ToUInt16(data, 6) != edge)
             {
@@ -128,11 +133,35 @@ public static class Regions
         public static int? VersionOf(string path)
         {
             var data = Bytes(path);
-            return data is null
-                   || data.Length < HeaderBytes
-                   || data[0] != 'M' || data[1] != 'S' || data[2] != 'Q' || data[3] != 'R'
-                ? null
-                : BitConverter.ToUInt16(data, 4);
+            return IsRegion(data) ? BitConverter.ToUInt16(data, 4) : null;
+        }
+
+        /// <summary>
+        /// Whether these bytes open like a region file at all: the magic, and
+        /// enough of them for a header to be there.
+        ///
+        /// Read against the same constant <see cref="Write"/> writes, rather than
+        /// spelled out a letter at a time. It was spelled out twice — which is
+        /// the very thing this struct's own note says it exists to stop — and a
+        /// literal that has to agree with a constant is a literal that one day
+        /// will not.
+        /// </summary>
+        private static bool IsRegion([NotNullWhen(true)] byte[]? data)
+        {
+            if (data is null || data.Length < HeaderBytes)
+            {
+                return false;
+            }
+
+            for (var at = 0; at < Magic.Length; at++)
+            {
+                if (data[at] != Magic[at])
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>Where each record in this file begins.</summary>
@@ -151,6 +180,33 @@ public static class Regions
         /// <summary>Where the year had reached for one record's chunk.</summary>
         public byte SeasonAt(int at) => Data[at + 8];
 
+        /// <summary>
+        /// Whether any column of one record was stored as air.
+        ///
+        /// A stored surface of air is a reading that failed rather than a fact
+        /// about the world: it says the sky is what is on top here, and the map
+        /// paints it the same as ground nobody has explored. A pit dug deeper than
+        /// the old surface search would look produced exactly that, and once
+        /// stored there was nothing to make the server read the column again.
+        ///
+        /// Asked of the bytes already decompressed to read the headers, so a map
+        /// on disk answers this for the price of the pass it was having anyway.
+        /// </summary>
+        public bool HoledAt(int at, int edge)
+        {
+            var first = at + RecordHeaderBytes;
+            for (var i = 0; i < edge * edge; i++)
+            {
+                var entry = first + i * EntryBytes;
+                if (Data[entry] == 0 && Data[entry + 1] == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static byte[]? Bytes(string path)
         {
             try
@@ -166,16 +222,10 @@ public static class Regions
     }
 
     /// <summary>One chunk as it is stored: where the year is, and its columns.</summary>
-    public readonly struct Stored
+    public readonly struct Stored(byte season, byte[] record)
     {
-        public Stored(byte season, byte[] record)
-        {
-            Season = season;
-            Record = record;
-        }
-
-        public byte Season { get; }
-        public byte[] Record { get; }
+        public byte Season { get; } = season;
+        public byte[] Record { get; } = record;
     }
 
     /// <summary>
@@ -264,13 +314,32 @@ public static class Regions
     }
 
     /// <summary>
-    /// Where the year had reached for every chunk on disk, without reading the
-    /// columns back. This is what a starting run needs to know which chunks are
-    /// already mapped and whether the season has moved since.
+    /// What one pass over the map on disk found.
+    ///
+    /// Two answers from one walk because they come from the same bytes: a second
+    /// pass to ask the second question would decompress the whole map again for
+    /// something already in hand.
     /// </summary>
-    public static Dictionary<(int, int), byte> Index(string dir, int edge)
+    /// <param name="Seasons">Where the year had reached for every chunk stored.</param>
+    /// <param name="Holed">
+    /// The chunks holding a column stored as air — a surface that was read wrong
+    /// and is worth reading again. See <see cref="Header.HoledAt"/>.
+    /// </param>
+    public sealed record Survey(
+        Dictionary<(int, int), byte> Seasons,
+        HashSet<(int, int)> Holed);
+
+    /// <summary>
+    /// Walks the map on disk without reading the columns back into memory.
+    ///
+    /// This is what a starting run needs: which chunks are already mapped,
+    /// whether the season has moved since, and which of them were stored with a
+    /// hole in their surface.
+    /// </summary>
+    public static Survey Walk(string dir, int edge)
     {
-        var index = new Dictionary<(int, int), byte>();
+        var seasons = new Dictionary<(int, int), byte>();
+        var holed = new HashSet<(int, int)>();
 
         foreach (var (_, path) in All(dir))
         {
@@ -281,11 +350,16 @@ public static class Regions
 
             foreach (var at in header.Records())
             {
-                index[header.ChunkAt(at)] = header.SeasonAt(at);
+                var chunk = header.ChunkAt(at);
+                seasons[chunk] = header.SeasonAt(at);
+                if (header.HoledAt(at, edge))
+                {
+                    holed.Add(chunk);
+                }
             }
         }
 
-        return index;
+        return new Survey(seasons, holed);
     }
 
     /// <summary>

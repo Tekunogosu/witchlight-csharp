@@ -32,8 +32,15 @@ public sealed class ServiceProcess : IDisposable
     private StreamWriter? _log;
     private readonly object _writing = new();
 
-    /// <summary>Whether the stop about to happen is one we asked for.</summary>
-    private bool _stopping;
+    /// <summary>
+    /// Whether the stop about to happen is one we asked for.
+    ///
+    /// Volatile because it is written on the game thread and read by `Ended` on
+    /// whichever threadpool thread the process's exit event arrives on. It picks
+    /// which line goes in the log, so a stale read reports a stop somebody asked
+    /// for as the service having fallen over on its own.
+    /// </summary>
+    private volatile bool _stopping;
 
     private ServiceProcess(ICoreServerAPI api, string executable, string config)
     {
@@ -106,12 +113,24 @@ public sealed class ServiceProcess : IDisposable
 
             // Truncated on start, and shared so that a tail already watching it
             // keeps working across a restart.
+            //
+            // Opened under the lock that writes it, because the two sides of this
+            // field are not on the same thread: a start comes off the game thread
+            // and every line written to it arrives on a threadpool thread, from
+            // the process's own output. Published outside the lock, the writer is
+            // reachable before `AutoFlush` has been set on it. Whatever a previous
+            // run left open is closed here rather than dropped with its handle
+            // still held — a service that stopped on its own never closed one.
             Directory.CreateDirectory(GamePaths.Logs);
-            _log = new StreamWriter(
-                new FileStream(LogPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+            lock (_writing)
             {
-                AutoFlush = true,
-            };
+                _log?.Dispose();
+                _log = new StreamWriter(
+                    new FileStream(LogPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    AutoFlush = true,
+                };
+            }
 
             var process = new Process { StartInfo = started, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, line) => Say(line.Data);

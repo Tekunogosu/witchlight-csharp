@@ -18,20 +18,6 @@ follows from the data rather than being guessed ahead of it.
 Seen for real: a single 3.48 MB packet produced
 `Client ... disconnected, too large packet of 3478354 bytes received`.
 
-## Store the season outside the record
-
-Regions bound a block change to one file, but not a season change. The season is
-stored per chunk in the record header and is recomputed for every chunk on every
-export, so when the year advances a step — about three times an hour on the
-default calendar — every region is read back and rewritten to change one byte per
-chunk.
-
-A season is a function of latitude and the calendar, so it does not belong beside
-the columns. A small file of its own, one entry per chunk, would be about nine
-bytes per chunk against the 6,154 a record costs, and would leave terrain files
-untouched by the passage of time. The renderer would then read the season from
-there rather than from `Column`.
-
 ## Give the mod a configuration file
 
 Its only settings are `WITCHLIGHT_API_BIND` and `WITCHLIGHT_API_TOKEN`, read from

@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using Vintagestory.API.Server;
 
 namespace Witchlight;
@@ -19,19 +17,13 @@ namespace Witchlight;
 /// otherwise draw every marker as a plain diamond forever, and a picture laid
 /// where there is none can only improve on nothing.
 /// </summary>
-public sealed class IconExchange
+public sealed class IconExchange(ICoreServerAPI api, string exports)
 {
-    private readonly ICoreServerAPI _api;
-    private readonly string _exports;
-
-    public IconExchange(ICoreServerAPI api, string exports)
-    {
-        _api = api;
-        _exports = exports;
-    }
+    private readonly ICoreServerAPI _api = api;
+    private readonly string _exports = exports;
 
     /// <summary>How many are on disk for the map service to draw with.</summary>
-    public int Count => Stored().Count;
+    public int Count => Icons.Stored(_exports).Count;
 
     /// <summary>
     /// Asks whoever has just joined for whatever is missing.
@@ -41,7 +33,7 @@ public sealed class IconExchange
     /// nothing. That is what makes asking everybody cheap — the cost is one small
     /// packet per join once the set is complete.
     /// </summary>
-    public void AskForMissing(IServerPlayer player) => Ask(player, Stored());
+    public void AskForMissing(IServerPlayer player) => Ask(player, Icons.Stored(_exports));
 
     /// <summary>
     /// Asks for everything, not only what is missing.
@@ -70,8 +62,9 @@ public sealed class IconExchange
     /// </summary>
     public void Accept(IServerPlayer player, IconTable table)
     {
+        var trusted = player.HasPrivilege(Privilege.controlserver);
         var sent = IconTable.Assemble(new[] { table });
-        var taking = player.HasPrivilege(Privilege.controlserver) ? sent : OnlyNew(sent);
+        var taking = trusted ? sent : OnlyNew(sent);
 
         var written = Icons.Accept(taking, _exports);
         if (written > 0)
@@ -80,7 +73,7 @@ public sealed class IconExchange
                 "[witchlight] {0} marker pictures from {1}{2} ({3} in total now)",
                 written,
                 player.PlayerName,
-                player.HasPrivilege(Privilege.controlserver) ? "" : " (not an admin, so only new ones)",
+                trusted ? "" : " (not an admin, so only new ones)",
                 Count);
         }
     }
@@ -95,7 +88,7 @@ public sealed class IconExchange
     /// </summary>
     private List<(string Name, byte[] Svg)> OnlyNew(List<(string Name, byte[] Svg)> sent)
     {
-        var have = new HashSet<string>(Stored(), StringComparer.Ordinal);
+        var have = new HashSet<string>(Icons.Stored(_exports), StringComparer.Ordinal);
         var taking = new List<(string, byte[])>();
 
         foreach (var (name, svg) in sent)
@@ -120,19 +113,4 @@ public sealed class IconExchange
     /// </summary>
     private const int MostIcons = 512;
 
-    /// <summary>What the server already has, so a client sends only what is new.</summary>
-    private List<string> Stored()
-    {
-        var dir = Icons.DirectoryIn(_exports);
-        if (!Directory.Exists(dir))
-        {
-            return new List<string>();
-        }
-
-        return Directory.GetFiles(dir, "*.svg")
-            .Select(Path.GetFileNameWithoutExtension)
-            .Where(name => !string.IsNullOrEmpty(name))
-            .Select(name => name!)
-            .ToList();
-    }
 }

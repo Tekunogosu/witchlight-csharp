@@ -23,14 +23,22 @@ public static class BlockShapes
     public static void Forget() => Tints.Clear();
 
     /// <summary>
-    /// The average colour of every texture this block's shape uses, or null where
-    /// it has no shape or the shape names nothing that loads.
+    /// The average colour of every texture this block's shape uses, and how much
+    /// of the square they cover. Nothing where it has no shape, or the shape
+    /// names nothing that loads.
+    ///
+    /// The coverage travels because a shape is no longer only the last resort. A
+    /// block declaring a texture that covers three per cent of it — a reed's two
+    /// seed heads, with the whole plant in the shape file — used to be coloured
+    /// from that texture and the shape never asked, which made every reed bed the
+    /// colour of a seed head. Both are candidates now, and what covers more of
+    /// the block is what stands for it.
     /// </summary>
-    public static string? AverageColour(ICoreAPI api, Block block)
+    public static TextureColours.Paint AverageColour(ICoreAPI api, Block block)
     {
         var shape = block.Shape?.Base;
         return shape is null
-            ? null
+            ? TextureColours.Paint.None
             : TextureColours.Once("shape:" + shape, () => Decode(api, shape));
     }
 
@@ -50,7 +58,7 @@ public static class BlockShapes
     /// <summary>Tints found in shape files, by shape path.</summary>
     private static readonly Dictionary<string, (string? Climate, string? Season)> Tints = new();
 
-    private static string? Decode(ICoreAPI api, AssetLocation shape)
+    private static TextureColours.Paint Decode(ICoreAPI api, AssetLocation shape)
     {
         var path = shape.Clone().WithPathPrefixOnce("shapes/").WithPathAppendixOnce(".json");
         var average = new TextureColours.Average();
@@ -88,6 +96,15 @@ public static class BlockShapes
                     continue;
                 }
 
+                // And a shared shape stands its own textures in for the block's.
+                // `block/basic/cube` says `all: unknown` — see
+                // `TextureColours.Placeholder`, which owns that rule for the
+                // block's own textures as well as for a shape's.
+                if (TextureColours.Placeholder(texture))
+                {
+                    continue;
+                }
+
                 average.AddAll(api, new AssetLocation(shape.Domain, texture));
             }
 
@@ -98,7 +115,9 @@ public static class BlockShapes
             }
         }
 
-        return average.Hex;
+        return average.Any
+            ? new TextureColours.Paint(average.Hex, average.Covers)
+            : TextureColours.Paint.None;
     }
 
     /// <summary>A shape file that names none, so the loop below has nothing to walk.</summary>

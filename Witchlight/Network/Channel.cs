@@ -46,20 +46,30 @@ public static class Channel
     /// <summary>Registers everything the channel carries, on the server.</summary>
     public static IServerNetworkChannel Carrying(this IServerNetworkChannel channel)
     {
-        foreach (var carried in Carries)
-        {
-            channel.RegisterMessageType(carried);
-        }
+        Register(channel);
         return channel;
     }
 
     /// <summary>The same list, on the client.</summary>
     public static IClientNetworkChannel Carrying(this IClientNetworkChannel channel)
     {
+        Register(channel);
+        return channel;
+    }
+
+    /// <summary>
+    /// The registering itself, which is the same on both sides.
+    ///
+    /// Two methods rather than one because each side's channel is its own type
+    /// and each caller chains its own handlers off what comes back. What they do
+    /// is the list above, in order, once — and that was written out twice, in the
+    /// one file whose whole purpose is that the list is written out once.
+    /// </summary>
+    private static void Register(INetworkChannel channel)
+    {
         foreach (var carried in Carries)
         {
             channel.RegisterMessageType(carried);
         }
-        return channel;
     }
 }

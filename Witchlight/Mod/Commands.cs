@@ -3,7 +3,7 @@ using Vintagestory.API.Common;
 namespace Witchlight;
 
 /// <summary>
-/// What this mod's commands are called.
+/// What this mod's commands are called, and how one is declared.
 ///
 /// A long name that is always there and a short one that is there when nothing
 /// else has claimed it. Both sides register the same pair, so what a player types
@@ -47,4 +47,19 @@ public static class Commands
 
         return command.WithAlias(Short);
     }
+
+    /// <summary>
+    /// Opens a subcommand under the privilege the settings give it.
+    ///
+    /// The name is what the settings key it by, so it is written once and both
+    /// the game's command table and <see cref="Permissions"/> are handed the same
+    /// string. Written twice, they drift the moment one of them is renamed — and
+    /// a command registered under a permission nobody configured is a command
+    /// whose setting silently does nothing.
+    /// </summary>
+    public static IChatCommand BeginSubCommand(
+        this IChatCommand tree, string name, string description) =>
+        tree.BeginSubCommand(name)
+            .WithDescription(description)
+            .RequiresPrivilege(Permissions.For(name));
 }

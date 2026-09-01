@@ -56,6 +56,11 @@
 
   <ItemGroup>
     <None Update="modinfo.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The base game's block colours, recorded once so that a dedicated server
+         — whose install ships almost no block textures — draws a coloured map
+         from the moment it starts rather than waiting for a client to send one.
+         Refreshed by bake-palette.py; read by Palette/Vanilla.cs. -->
+    <EmbeddedResource Include="Palette/vanilla.json.gz" />
   </ItemGroup>
 
 </Project>

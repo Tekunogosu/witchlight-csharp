@@ -21,9 +21,10 @@ what a seraph looks like exists only where it is rendered, so a player's own cli
 draws one and sends the picture. Every player is asked on every join, and a client
 sends another thirty seconds after its character last changed.
 
-Versions track the [map service](../rust/witchlight) and **must match on minor
-version**. A format change clears the map while Witchlight is alpha — see
-[CHANGELOG.md](CHANGELOG.md).
+Versions track the [map service](../rust/witchlight) and **are always the same
+number**: the two ship as one archive and are one release, so a change to either
+half moves both. `package.sh` will not build a pair that disagrees. A format change
+clears the map while Witchlight is alpha — see [CHANGELOG.md](CHANGELOG.md).
 
 ## What it does
 
@@ -75,10 +76,14 @@ anything visible from above, does not reach the file either. Only the regions
 about to be written are read back off disk; the rest of the map is never touched.
 A server where nothing has happened writes nothing.
 
-The season is the exception, and the reason `TODO.md` wants it moved: it is stored
-per chunk, so a year advancing a step rewrites every region that holds a chunk
-whose season changed. That is roughly every twenty minutes on the default
-calendar.
+The season is the one thing that moves a region without anybody touching it: it is
+stored per chunk, so a chunk whose season changes rewrites the region holding it
+whether or not a player has ever been near. What decides how often that happens is
+how finely the season is counted — and it is counted **by the month**, which is
+the coarsest step the eye does not notice and the one the game itself counts in.
+Twelve steps a year rather than the 255 the stored byte could express, so a
+region is rewritten for the calendar about once an in-game month instead of three
+times an in-game day.
 
 **The format still moves.** Witchlight is alpha, so a map on disk that this build
 cannot read is cleared on start and rebuilt as players explore, rather than
@@ -107,11 +112,16 @@ write it. Every option is editable there, including:
 ```toml
 # Whether the server mod runs this service itself.
 autostart = true
+
+# Who may run each `wl` command in game.
+[commands]
+export = "admin"
+login = "player"
 ```
 
 Turn `autostart` off to run `witchlight serve` by hand instead, which is what a map
 that should stay up while the game server is down wants. `/witchlight service start`
-still runs it on demand.
+still runs it on demand. `[commands]` is under [Server commands](#server-commands).
 
 Where the map ended up listening goes in the server's own log as it comes up:
 
@@ -187,13 +197,65 @@ Nothing in the API stops a server building it: the `textures` asset category is
 the rule the game uses to pick a block's map colour is short enough to follow —
 the texture named by `textureCodeForBlockColor`, else the coverage layer, else
 `up`, else the first. On a **full game install**, where the server runs from the
-same directory as the client, this works: 13,886 of 14,091 blocks get a colour.
+same directory as the client, this works: 13,936 of 14,091 blocks get a colour.
+
+**What stands for a block is whatever covers most of it.** A block naming a
+texture for its map colour, wearing a coverage overlay, or declaring an `up` face
+has said which one, and that is taken. A block that has said none of those has
+said nothing, and its own dictionary order is not an answer — branchy leaves list
+`branch` before their leaves, and a branch is the one thing on that block nobody
+looking down at a tree can see. Its shape is weighed on the same terms rather
+than kept as a last resort, since a reed declares two textures that are a seed
+head covering three per cent of the square and keeps the whole plant in its shape
+file. The game's own rule here is `named, else up, else the first one listed`,
+which is where this started and where both of those went wrong.
+
+A shape's own textures are skipped where they are the game's stand-in for one it
+has not been given: `block/basic/cube` says `all: unknown`, which is the
+missing-texture checker — white, opaque over the whole square, and the loudest
+thing in any shape it appears in.
+
+A block that ends with no colour is recorded as one of two things, because they
+are not the same fact and the map must not draw them the same way. A block with no
+texture and no shape colour **draws nothing** — air, an invisible helper — and bare
+ground is the right picture of it. A block whose textures were there and drew
+nothing has a **colour missing**, and that is a gap in this palette rather than a
+hole in the world. Filing the two together is what made the ground under dug-up
+grass share a colour with a world nobody had ever walked into.
 
 A **dedicated server download does not ship block textures**. Measured on a real
 one: 46 PNGs against a full install's 9,587, and no `textures/block/` at all. The
 mod has nothing to average, and the map renders as empty background.
 
-So when the server cannot build a usable palette, it asks for one.
+### The base game's colours travel with the mod
+
+So they are not asked for. The blocks of the base game look the same on every
+server there is, which makes their colours a fact this mod can know before it is
+installed anywhere — so a recording of them rides inside the assembly, 70 KiB
+compressed, and fills whatever the server's own build could not colour.
+
+Measured on a real dedicated server with no block textures at all: **13,936 of
+14,091 blocks coloured, no gaps, before a single player connected**, which is the
+same palette a full game install builds for itself. The remaining 155 are the
+blocks the game draws nothing for. Rendering that server's first export reports
+`0% waiting on a colour`.
+
+It is a seed and not an answer. It fills only what has no colour, so a colour this
+server worked out from its own assets always wins, and it says nothing about a
+mod's blocks — those are still asked for, which is now the whole of what the
+handshake below is for. It is keyed by block code and carries no ids, since an id
+is assigned per world; each entry is given this world's id as it is read, and a
+code this server has never heard of is dropped.
+
+Refresh it with `bake-palette.py`, which records a real `palette.json` rather than
+deriving one — working out a block's colour takes the game's own asset pipeline,
+and a second implementation of that rule would drift from `PaletteBuilder` the week
+it was written. Run a server with nothing but this mod, from a full game install,
+and point the script at the palette it wrote. It refuses anything with a mod's
+blocks in it or with a gap in it, because a recording shipped to every server must
+be neither.
+
+So when the server still cannot build a usable palette, it asks for one.
 
 ### The handshake
 
@@ -216,6 +278,24 @@ agree across the wire. The server keeps its own mod set as a separate `ModStamp`
 it never sends, which still catches a mod changing its textures without moving any
 block id.
 
+**An admin is asked first, always.** Theirs is the tileset the map should look
+like, so where one is in the room there is no reason to ask anybody else and every
+reason not to — a colour taken from a player is a colour an admin's answer will
+only have to replace. Where there is no admin, one of the others is picked at
+random rather than by connection order, so a server does not put the same person's
+client to work every time it comes up. Nobody outside `commands.palette` is asked
+at all: a server that has narrowed who may ask for a palette by hand has said
+something about whose assets it trusts, and asking round the room past that would
+be the mod overruling its own operator.
+
+**An admin is asked once even when nothing is missing.** A palette drawn entirely
+from the recording above is complete and still nobody who could decide what this
+server looks like has decided — a texture pack changes every colour on the map
+without changing a single block code. So the palette records whether an admin's
+own assets settled it, and while none has, the first admin to join is asked. Their
+answer either matches what is stored, in which case nothing is written and nothing
+is redrawn, or it replaces it. `status` says which of the two the map is in.
+
 **Anybody is asked; only an admin may overwrite.** Admins alone used to be asked,
 which is the right instinct and the wrong rule: a dedicated server is run from a
 console, and the person who runs it may never have a character on it — so a server
@@ -237,9 +317,39 @@ A half-sent palette is dropped when its sender disconnects.
 
 **Palettes are merged, not replaced.** A client only has textures for the mods it
 has installed, so two players with different sets can between them produce a
-complete palette where neither could alone. Asking stops once 90% of blocks have a
-colour — a dedicated server scores about 15% on its own, a full install 99%, so
-the threshold separates them cleanly.
+complete palette where neither could alone.
+
+**Which kind of colourless a block is travels with it.** An entry with no colour
+means one of two things — the block draws nothing at all, or it draws something
+the sender could not colour — and only the sender's own assets can tell them
+apart. Without that on the wire every colourless block in a client's palette
+arrived saying nothing, so the server stopped being able to see a gap worth
+asking about, and the map drew air and those invisible placeholders as ground
+nobody had ever explored. A palette from a client older than the field says
+nothing rather than saying "draws", which is what keeps it safe to take.
+
+**Two things make a palette worth asking for, and the second is the one that keeps
+a working map correct.** The first is coverage: below 90% of blocks coloured there
+is no map to speak of, and a dedicated server scores about 15% on its own against
+a full install's 99%, so the threshold separates them cleanly. The second is a
+named gap — a block the palette says draws something and has no colour for. A
+palette can be 98% covered and still have no colour for bare soil, which is the
+block a player uncovers every time they dig; coverage is one number over fourteen
+thousand blocks and cannot see that, so the gaps themselves are watched. A gap is
+asked about on the export beat as well as on join, because a colour the map has not
+got is not something a player fixes by rejoining and on a small server nobody may
+rejoin for days.
+
+**Each player is asked once, and that is what stops the asking.** One is all a
+player has to give: a client sends the whole of what its assets can colour, and
+everything it could fill the merge has filled. Somebody who joins later has not
+been asked and may have the mod set that answers, so the map goes on repairing
+itself as people arrive — and a server where nobody can supply the last colour
+stops asking rather than going round the room for ever. What is still missing is
+named in the log and in `status`, which is a report to make to the mod shipping
+those blocks rather than a command to run again here. `/witchlight palette` opens
+the question again, for the one case none of this can see: the colours themselves
+moving under the same block ids.
 
 **It is sent in slices.** Block codes are not sent at all: the server turns ids
 back into codes from its own registry, and those codes were the bulk of the
@@ -254,20 +364,37 @@ change does.
 
 ## Server commands
 
-All under `/witchlight`, requiring `controlserver`. `/wl` is the same tree under a
-shorter name, on both sides — claimed only where no other mod already answers to
-it, since the game hands out an alias by overwriting whatever holds the name. The
-long name is always registered, so it is the one written down here.
+All under `/witchlight`. `/wl` is the same tree under a shorter name, on both sides
+— claimed only where no other mod already answers to it, since the game hands out
+an alias by overwriting whatever holds the name. The long name is always
+registered, so it is the one written down here.
+
+**Who may run which is the operator's**, in the `[commands]` section of
+`witchlight.conf`. The defaults are in the table below and split the commands that
+change what the server is doing from the ones that answer a question about the
+person typing them. `admin` and `player` are spelled out; any privilege the game
+knows works in their place, so a server with a moderator role can name it, and a
+name it does not know is refused to everyone but an admin and said in the log.
+
+The same setting decides whom a thing may be taken *from*: a server that lets its
+players fetch a palette lets its players be fetched from, because that is the same
+question asked from the other end. What guards the map either way is what is done
+with the answer — see the palette section above.
+
+`witchlight status` prints the table in force. That is where to look on a server
+upgrading into this, since a settings file written before `[commands]` existed says
+nothing about it and nothing rewrites a file an operator owns just to add a section
+of defaults it is already following.
 
 | | |
 |---|---|
 | `status` | where exports live, which source the palette came from, its coverage and fingerprint, whether that fingerprint is stale, where the world counts from, whether the map service is up, and when terrain was last written |
 | `service [status\|start\|stop]` | the map service this mod runs. `start` runs it whatever `autostart` says, because somebody typing the command has asked |
-| `palette [player]` | ask an online admin for a palette now, rather than waiting for the next join. Theirs replaces what is stored, which is what makes this the way to correct a map |
-| `icons [player]` | ask an online admin for every marker picture again, replacing what is there |
+| `palette [player]` | ask for a palette now, rather than waiting for the next join. An admin's replaces what is stored, which is what makes this the way to correct a map |
+| `icons [player]` | ask for every marker picture again, replacing what an admin sent |
 | `export` | write the surface of every loaded chunk immediately |
-| `login` | send yourself a link to your own page of the map. Needs only `chat`, since it acts on nobody but its caller |
-| `mark` | mark where you are looking, using your preset for that block. Needs only `chat` too, and asks the caller's own client — which is the only side that knows what they are looking at |
+| `login` | send yourself a link to your own page of the map. Acts on nobody but its caller, which is why it is anybody's by default |
+| `mark` | mark where you are looking, using your preset for that block. Anybody's too, and asks the caller's own client — which is the only side that knows what they are looking at |
 
 | `portrait [player]` | ask a player's client for a picture of their character now |
 
@@ -297,18 +424,43 @@ is the client drawing itself unprompted while `/witchlight portrait` is the serv
 asking it to. The same holds for `palette` and `icons`, which exist on
 both sides for that reason.
 
-Everything under `/witchlight` requires `controlserver`. Subcommands inherit it from
-the root, which is how the game resolves a privilege down a command tree.
+Every subcommand is registered under the privilege `[commands]` gives it, read once
+before a single command is declared — the game bakes a privilege into its command
+table as it registers it, so a value read again later could disagree with the one
+the command is enforcing. Changing the setting therefore takes a restart. The tree
+itself asks only for `chat`, since it does nothing but list what is under it.
 
 `/witchlight status` is the first thing to look at when the map looks wrong: it
-says whether the palette is the server's own poor one or a good one from a client.
+says whether the palette is the server's own poor one, the recording that ships
+with the mod, or a good one from a client — and whether an admin has confirmed it.
 
 ## Reading the surface
 
 The rain height map gives each column's height without searching down from the
 sky, but it marks where rain *stops* — commonly the air just above the ground.
 Sampling it directly maps the sky and every column comes back as air, so the pump
-steps down up to eight blocks until it finds something real.
+steps down until it finds something real.
+
+All the way down, not a fixed few. A dug shaft is a column of air below where the
+sky still says the ground is, and a search that gave up after eight of them stored
+air — which the map painted as ground nobody has ever explored, so every pit deeper
+than that became a hole on the map that no amount of exporting would fill. The
+depth is paid by the columns that need it: ordinary ground answers on the first or
+second read.
+
+**Something that shows, not merely something that is not air.** A large structure
+stands one real block beside a run of invisible placeholders, and a search that
+stopped at the first non-air block recorded one of those — a block with nothing to
+draw, where there was grass. What counts as showing is the palette's to say, since
+that is the question the palette was built to answer; the exporter asks it through
+`PaletteExchange.Shows` and asks again each export, so a better palette from a
+client corrects what is written as well as what is coloured.
+
+A column already stored as air is read again. It is a reading that failed rather
+than a fact about the world, so the chunks holding one are left out of what counts
+as exported when the map on disk is walked at start, and the server's own
+`ChunkDirty` brings them back as they load. The walk asks this of bytes it has
+already decompressed to read the seasons, so it costs nothing extra.
 
 Columns are written as `u16 blockId, i16 surfaceY, u8 temperature, u8 rainfall`,
 six bytes each, 1024 to a chunk, after a per-chunk header carrying the season.
@@ -319,6 +471,13 @@ exactly the way the game's shader does.
 Season is recomputed for **every** chunk on every export, carried-over ones
 included. A season that only advanced where players were standing would leave the
 rest of the map stuck in whatever month it was last visited.
+
+What is *stored* is the middle of the month that point in the year falls in — the
+middle rather than either edge, so a chunk is drawn in its month's own colour and
+is the same distance from wrong at both ends of it. The byte means what it always
+meant, a position in the year from 0 to 255, so nothing on disk changed when this
+did; only the number of distinct values it takes. That is what keeps the calendar
+from rewriting the whole map three times a day for a change nobody can see.
 
 ## Sharing markers
 
@@ -357,6 +516,18 @@ and, where "keep as preset" is on, sends the preset to the map service.
 A marker made this way is the same waypoint the web form's markers are, under a
 guid, with a decision recorded about who may see it. Nothing about it is special
 afterwards.
+
+**A preset starts out naming a family, not a block.** A block code carries its
+variant as a number — `game:tallgrass-3`, `game:leaves-grown7-oak` — so a preset
+kept against the exact code answers for one stage of grass out of eight, and
+keeping one for grass meant keeping it again seven more times. So the number is
+where the wildcard goes by default and the window opens on
+`game:leaves-grown*-oak`. It is only a default: the star is a character in a text
+field, so move it, add another, or take it out to name one block exactly —
+`BlockPattern.Fits` reads it wherever it ends up, and `*` stands for any run of
+characters, so `b1-b2-*` names `b1-b2-b3` and `b1-b2-c3` alike. The map's own
+form offers the same starting pattern, so a preset made from a key press and one
+made from a right click begin the same.
 
 `mark` is on both sides of the command tree because a slash is what anybody types
 first, and the two are one behaviour: the server's copy sends that player's own
@@ -403,6 +574,17 @@ server is handed the map service and a client has no use for a megabyte of it �
 42 KiB against 971. The client archive carries `_client` in its name so that both
 can sit in `dist/` at once rather than one quietly overwriting the other.
 
+The base game's block colours are compiled in as an embedded resource,
+`Witchlight/Palette/vanilla.json.gz`. It changes only when the game does:
+
+```sh
+./bake-palette.py /path/to/witchlight/palette.json    # record a new one
+```
+
+Record it from a server running nothing but this mod, out of a full game install
+so the textures are there. The script refuses a palette with a mod's blocks in it
+or with a gap in it, since a recording shipped to every server must be neither.
+
 The map service is looked for in `/var/tmp/rust-target/release/witchlight` and
 `../rust/witchlight/target/release/witchlight`, or wherever `$WITCHLIGHT_SERVICE`
 says. Packaging **stops** when there is none, rather than quietly producing a mod
@@ -433,7 +615,8 @@ together.
 |---|---|
 | `Mod/` | the two mod systems and the commands: what runs on each side, when, and what an operator can type |
 | `Map/` | reading the surface, writing it, and settling where a world's map belongs |
-| `Palette/` | what a block looks like, and asking a client for the assets a dedicated server does not ship |
+| `Palette/` | what a block looks like, the base game's colours recorded once, and asking a client for the rest |
+| `Players/` | where everybody is, what the map may say about them, and the bars a card carries |
 | `Markers/` | markers, who may see them, and what one player is shown of another's |
 | `Portraits/` | drawing a player, which only their own machine can do |
 | `Icons/` | the marker icons, which arrive the same way a palette does |
@@ -448,13 +631,17 @@ question about that subject rather than a question about the network. What
 crosses the wire is `Network/`; who asks for it and what is done with the answer
 stays with the subject.
 
-Two files are worth knowing before changing anything. **`Util/Disk.cs` owns every
+Three files are worth knowing before changing anything. **`Util/Disk.cs` owns every
 write**: a file is written only when it would differ, and always through a
 temporary renamed into place, because the map service reads all of it while the
 server runs. **`Service/Settings.cs` owns every question about what the operator
 wants**, including what a marker nobody has decided about is — three places used
 to negate that setting separately, which is three chances to show somebody's
-markers to a server.
+markers to a server. **`Mod/Permissions.cs` owns who may do what**: the privilege a
+command registers under, whether a named player may be asked for what a command
+fetches, and who is in the room when the server needs a palette were a literal
+`controlserver` at each site and a `bool admin` threaded between them, which is
+three chances to disagree about what an operator asked for.
 
 ## Known gaps
 

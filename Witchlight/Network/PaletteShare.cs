@@ -58,6 +58,27 @@ public class PaletteTable
     [ProtoMember(10, IsPacked = true, DataFormat = DataFormat.ZigZag)]
     public List<int> Season { get; set; } = new();
 
+    /// <summary>
+    /// Which kind of colourless each block is: 1 where it draws nothing at all,
+    /// 0 where it draws something this client could not colour, -1 where the
+    /// sender said nothing.
+    ///
+    /// It travels because the two are not the same fact and the server cannot
+    /// work either of them out for itself — its own assets are the ones that
+    /// could not answer. Without it every colourless block in a client's palette
+    /// arrived saying nothing: the server could no longer tell a gap worth asking
+    /// about from a block with nothing to show, so it stopped noticing gaps at
+    /// all, and the map painted air and the invisible placeholders of large
+    /// structures as ground nobody had ever explored.
+    ///
+    /// The third state is what makes an older client's palette safe to take. A
+    /// list that is not there reads as "said nothing" rather than as a wall of
+    /// zeroes, which would have turned every one of those blocks into a gap the
+    /// server chased forever.
+    /// </summary>
+    [ProtoMember(11, IsPacked = true, DataFormat = DataFormat.ZigZag)]
+    public List<int> Hidden { get; set; } = new();
+
     /// <summary>Blocks per slice. Ten bytes each, so this is a small packet.</summary>
     public const int SliceSize = 8000;
 
@@ -102,6 +123,7 @@ public class PaletteTable
                 slice.Colors.Add(Pack(entry.Rgb));
                 slice.Climate.Add(Intern(entry.ClimateMap));
                 slice.Season.Add(Intern(entry.SeasonMap));
+                slice.Hidden.Add(entry.Invisible is null ? -1 : entry.Invisible.Value ? 1 : 0);
             }
 
             slices.Add(slice);
@@ -149,6 +171,7 @@ public class PaletteTable
                 {
                     Id = id,
                     Rgb = Unpack(slice.Colors.ElementAtOrDefault(i)),
+                    Invisible = slice.DrawingAt(i),
                     ClimateMap = slice.NameAt(slice.Climate.ElementAtOrDefault(i)),
                     SeasonMap = slice.NameAt(slice.Season.ElementAtOrDefault(i)),
                 };
@@ -161,6 +184,24 @@ public class PaletteTable
     private string? NameAt(int index)
     {
         return index >= 0 && index < ColorMaps.Count ? ColorMaps[index] : null;
+    }
+
+    /// <summary>
+    /// What this slice says about whether the block at <paramref name="at"/>
+    /// draws, or null where it says nothing.
+    ///
+    /// The whole list is checked against the ids rather than one entry read out
+    /// of it, because a slice from a client older than this field carries no list
+    /// at all and <c>ElementAtOrDefault</c> would answer 0 — "draws something" —
+    /// for every block in it.
+    /// </summary>
+    private bool? DrawingAt(int at)
+    {
+        if (Hidden.Count != Ids.Count)
+        {
+            return null;
+        }
+        return Hidden[at] < 0 ? null : Hidden[at] == 1;
     }
 
     private static int Pack(string? rgb)
