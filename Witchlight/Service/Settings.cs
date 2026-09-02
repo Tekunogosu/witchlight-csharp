@@ -146,6 +146,46 @@ public static class Settings
     public static bool PlayersPublic => On("players_public", byDefault: true);
 
     /// <summary>
+    /// Whether the map draws the claims the world made for itself.
+    ///
+    /// The perimeters worldgen rules round a trader camp or a story structure.
+    /// They are land claims like any other to the game — the map's own
+    /// <see cref="ClaimFeed"/> reads them out of the same list — and they are not
+    /// like any other in the one way that matters here: they carry an owner's
+    /// name with no owner behind it, and they exist from the moment that ground
+    /// generated rather than from the moment somebody found it.
+    ///
+    /// Off by default. A web map is the one place every boundary on a server can
+    /// be read at once, from a chair, without going anywhere, so drawing these
+    /// hands every reader the location of every trader — which is not something
+    /// the game gives anybody. An operator running a map that shows the lot turns
+    /// it on.
+    ///
+    /// Read here and enforced by leaving them out of what is sent, never by the
+    /// page declining to draw them: a claim that reached a browser is a claim
+    /// anybody may read out of it.
+    /// </summary>
+    public static bool ClaimsWorldgen => On("claims.worldgen", byDefault: false);
+
+    /// <summary>
+    /// How long to leave between writing what the terrain has done.
+    ///
+    /// The map's own coalescing knob. Everything a chunk does inside one beat is
+    /// written once, so raising this trades how current the terrain is against how
+    /// often the disk is touched — and a world save exports whatever the gap was
+    /// holding, so nothing is ever lost by it, only delayed.
+    ///
+    /// Held between a second and ten minutes. An export runs on the server's own
+    /// tick, so a gap of nothing is the game spending its time on the map rather
+    /// than on the world; past ten minutes a map is not a picture of a world
+    /// people are playing in. Enforced here because this is the half that acts on
+    /// it — the settings file says the same two numbers in the note above the
+    /// line, which is the only place an operator reads them.
+    /// </summary>
+    public static int ExportIntervalMs =>
+        Math.Clamp(Number("export_interval_ms", byDefault: 10000), 1000, 600000);
+
+    /// <summary>
     /// The address to give a player, or null when there is none to give.
     ///
     /// What an operator set, if they set anything. A server on the open internet
@@ -325,25 +365,6 @@ public static class Settings
     /// because "nothing in it" is the same answer to both and the wrong one to
     /// one of them.
     /// </summary>
-    /// <summary>
-    /// Every setting inside one table, in the order the file gives them.
-    ///
-    /// The reader above answers one question by name, which is the whole of what
-    /// a setting with a known name needs. A table whose keys are the operator's
-    /// own — the bars a player's card carries — cannot be asked that way: what
-    /// is wanted is everything in it, and the order they were written in, since
-    /// that is the order they will be drawn in.
-    /// </summary>
-    /// <summary>
-    /// Whether the file has this table at all, however empty it is.
-    ///
-    /// The difference matters wherever an absent table means the defaults: a
-    /// settings file written before a table existed says nothing about it and
-    /// should behave as the defaults do, while a table somebody has emptied on
-    /// purpose is them saying they want none of it. Asked apart from reading it,
-    /// because "nothing in it" is the same answer to both and the wrong one to
-    /// one of them.
-    /// </summary>
     public static bool HasTable(string table)
     {
         try
@@ -366,6 +387,15 @@ public static class Settings
         return false;
     }
 
+    /// <summary>
+    /// Every setting inside one table, in the order the file gives them.
+    ///
+    /// The reader above answers one question by name, which is the whole of what
+    /// a setting with a known name needs. A table whose keys are the operator's
+    /// own — the bars a player's card carries — cannot be asked that way: what
+    /// is wanted is everything in it, and the order they were written in, since
+    /// that is the order they will be drawn in.
+    /// </summary>
     public static IEnumerable<(string Key, string Said)> Table(string table)
     {
         var found = new List<(string, string)>();
@@ -429,6 +459,19 @@ public static class Settings
     /// not to, and shares nobody's markers unless told to. One reader that
     /// silently assumed the first would have made the third quietly wrong.
     /// </summary>
+    /// <summary>
+    /// A setting that is a number, and what an absent or unreadable one means.
+    ///
+    /// Anything that is not a number at all is the default rather than a zero: a
+    /// typo in a settings file must not be read as the operator asking for the
+    /// fastest possible beat.
+    /// </summary>
+    private static int Number(string key, int byDefault)
+    {
+        var said = Value(key);
+        return int.TryParse(said?.Trim(), out var number) ? number : byDefault;
+    }
+
     private static bool On(string key, bool byDefault)
     {
         var said = Value(key);

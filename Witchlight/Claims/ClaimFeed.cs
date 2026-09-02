@@ -28,13 +28,6 @@ public class LiveArea
     public int Y2 { get; set; }
 }
 
-/// <summary>
-/// One land claim, as the map draws it.
-///
-/// The areas rather than the claim's bounding box: a claim is built up out of
-/// adjacent rectangles and the shape they make is the shape of the boundary. A
-/// box drawn around the lot would put a fence round ground nobody has taken.
-/// </summary>
 /// <summary>One person a claim lets in, and what it lets them do.</summary>
 public class LiveGuest
 {
@@ -50,6 +43,13 @@ public class LiveGuest
     public bool Builds { get; set; }
 }
 
+/// <summary>
+/// One land claim, as the map draws it.
+///
+/// The areas rather than the claim's bounding box: a claim is built up out of
+/// adjacent rectangles and the shape they make is the shape of the boundary. A
+/// box drawn around the lot would put a fence round ground nobody has taken.
+/// </summary>
 public class LiveClaim
 {
     /// <summary>
@@ -254,8 +254,49 @@ public static class ClaimFeed
             })
             .ToList();
 
-    /// <summary>How many there are, for `witchlight status`.</summary>
+    /// <summary>How many there are on the server, for `witchlight status`.</summary>
     public static int Count(ICoreServerAPI api) => api.World.Claims?.All?.Count ?? 0;
+
+    /// <summary>
+    /// Whether one claim belongs to a player rather than to the world.
+    ///
+    /// The world writes a name on the perimeters it rules round trader camps and
+    /// story structures — "Trader" — and writes no uid, because there is nobody
+    /// to write. That absence is the whole of the difference and the only part of
+    /// it worth trusting: a name is a string worldgen chose and any mod may
+    /// choose the same one, while an owner is a player the server knows.
+    ///
+    /// Asked in one place because two would be two answers. Who may draw a claim
+    /// is decided from the same fact — a claim nobody owns counts against
+    /// nobody's allowance — so this is what both sides read.
+    /// </summary>
+    private static bool Owned(LandClaim claim) => !string.IsNullOrEmpty(claim.OwnedByPlayerUid);
+
+    /// <summary>
+    /// How many of them the map draws, for `witchlight status`.
+    ///
+    /// Said beside the count on the server because the two differ, and the
+    /// difference is the one an operator will want explaining: a map showing
+    /// fewer claims than the server has is <see cref="Settings.ClaimsWorldgen"/>
+    /// being off, not a claim gone missing.
+    /// </summary>
+    public static int Drawn(ICoreServerAPI api)
+    {
+        if (Settings.ClaimsWorldgen)
+        {
+            return Count(api);
+        }
+
+        var drawn = 0;
+        foreach (var claim in api.World.Claims?.All ?? new List<LandClaim>())
+        {
+            if (claim is not null && Owned(claim))
+            {
+                drawn++;
+            }
+        }
+        return drawn;
+    }
 
     /// <summary>
     /// Every claim, and the two lists of who may do what with them.
@@ -288,16 +329,17 @@ public static class ClaimFeed
         var byOwner = new Dictionary<string, List<LandClaim>>(StringComparer.Ordinal);
         foreach (var claim in api.World.Claims?.All ?? new List<LandClaim>())
         {
-            var owner = claim?.OwnedByPlayerUid;
-            if (string.IsNullOrEmpty(owner))
+            if (claim is null || !Owned(claim))
             {
                 continue;
             }
+
+            var owner = claim.OwnedByPlayerUid;
             if (!byOwner.TryGetValue(owner, out var theirs))
             {
                 theirs = byOwner[owner] = new List<LandClaim>();
             }
-            theirs.Add(claim!);
+            theirs.Add(claim);
         }
 
         foreach (var uid in Known(api))
@@ -439,13 +481,27 @@ public static class ClaimFeed
         return hash.ToString("x16");
     }
 
-    /// <summary>Every claim saved on the server, as the map draws one.</summary>
+    /// <summary>
+    /// Every claim the map is willing to draw.
+    ///
+    /// Everything a player owns, and — only where the settings ask for it — the
+    /// perimeters the world rules round its own trader camps and story
+    /// structures. Those are left out here rather than left to the page, because
+    /// a claim that reached a browser is a claim anybody may read out of it; see
+    /// <see cref="Settings.ClaimsWorldgen"/> for why they start hidden.
+    /// </summary>
     public static List<LiveClaim> All(ICoreServerAPI api)
     {
+        var worldgen = Settings.ClaimsWorldgen;
         var drawn = new List<LiveClaim>();
         foreach (var claim in api.World.Claims?.All ?? new List<LandClaim>())
         {
             if (claim?.Areas is null)
+            {
+                continue;
+            }
+
+            if (!worldgen && !Owned(claim))
             {
                 continue;
             }

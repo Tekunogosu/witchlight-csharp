@@ -13,6 +13,210 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.41.0
+
+**Deploy note:** both halves, upgraded together. **The map is cleared and
+rebuilds**, because the region format has changed — it fills back in over the
+following minutes without anyone walking anywhere, since this release also draws
+the ground the savegame already holds. The new `export_interval_ms` setting is
+written into the settings file the next time the service writes one; a file
+without it keeps the ten seconds the map has always used.
+
+**A chunk is stored and written on its own.** Version 4 was one gzip stream over
+a whole region, so a single column moving meant repacking the other two hundred
+and fifty-five: a quarter of a megabyte to record six kilobytes of change, and on
+a server with people on it half a gigabyte an hour to keep a map that had barely
+moved. Version 5 puts a directory of fixed size at the head of each region and
+compresses every chunk behind it, so a chunk that changes costs its own kilobyte
+and the entry naming it. Measured on a running server: **110 KiB per change
+became 678 bytes.** The files are about five per cent larger for it.
+
+The export line says what that cost — `wrote 3 chunks (2716 bytes) of 4 regions`
+— because "wrote 5 regions" was the number that hid this for as long as it did.
+
+**A payload is appended and never overwritten**, so a run that dies mid-write
+leaves a directory still pointing at the bytes it always pointed at. Each chunk
+carries a CRC-32, and a chunk whose bytes do not answer to it is read as one the
+map does not hold — which the repair then fetches and writes again. A map damaged
+by a power cut heals rather than having to be thrown away. Regions are packed
+down when the bytes nothing points at outweigh the bytes something does.
+
+**A season now lives in the directory**, so a year turning from summer to autumn
+is sixteen bytes per chunk rather than a repacking of every region on the map.
+The start-up survey reads seasons and holes out of directories too, so a map of
+ten thousand regions starts without decompressing a byte of it.
+
+**`export_interval_ms` is how often the terrain is written**, in milliseconds,
+starting at the 10000 that was built in. It is the map's coalescing knob:
+everything a chunk does inside one beat is written once, so raising it trades how
+current the terrain is against how often the disk is touched, and a world save
+exports whatever the gap was holding either way. Held between 1000 and 600000 —
+an export runs on the server's own tick. Read and enforced by the mod.
+
+**The map draws the ground the game already has.** A map only ever knew what it
+had been told, so terrain explored before witchlight was installed was invisible
+to it: on one world the savegame held 7957 columns and the map had drawn 6011.
+The mod now walks outward from the edges of what the map holds and asks the game
+whether the savegame has the column beside it — and hands the ones it does to the
+repair, which already knows how to fetch a column and write it. It cannot make
+the server generate world: a column is only considered because a mapped one sits
+beside it, and only asked for when the save already holds it. `/witchlight status`
+says how much is left.
+
+## 0.40.3
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited.
+
+**An export says what moved, not just that something did.** A column counts as
+changed the moment one of its 1024 positions differs, so a count of changed
+columns says how much of the map was rewritten and nothing at all about why. The
+line now reads `9 of 21 columns re-read changed (280 positions: 280 blocks, 280
+heights, 280 climate)` — a handful of positions with a new block on them is
+somebody building; a thousand whose climate moved on its own would be a field this
+map has no business re-reading drifting under it. Only columns already on disk are
+counted, since one being written for the first time differs everywhere and would
+drown the rest.
+
+Written because a map that rewrote five regions every ten seconds for
+three-quarters of an hour, with the count of mapped chunks never moving, could not
+be told apart from one that was following the world honestly. It was following the
+world honestly — but nothing in the log said so, and reading a re-read is not
+something to do from memory.
+
+**The quiet export line says what it could not read**, which the loud one already
+did. An export that read everything it was asked for and found nothing changed
+still had columns it could not reach, and said nothing about them.
+
+## 0.40.2
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared. Every hole a
+map is carrying fills in within a few seconds of the server starting, and no new
+one is made.
+
+**A rain height above the world is not a height, and that is what has been putting
+holes in the map since 0.38.1.** The export checks that a column's blocks are
+really in memory — 0.38.1 added it, and it was right to — by asking for the
+vertical chunk holding that chunk's highest ground. It took the highest number in
+the chunk's rain heightmap, and the game leaves `ushort.MaxValue` in that map
+wherever rain never stopped. So one such position spoke for a whole chunk: the
+check asked the server for the vertical chunk **two thousand layers up**, was told
+there is none, and set aside a column whose blocks were every one of them in
+memory as a column whose blocks had gone.
+
+Nothing about a column ever changes what its rain map says, which is why those
+holes were permanent, why walking back to one never filled it, and why three
+rounds of asking the server to load them changed nothing — the server had already
+loaded them, every time, and handed back exactly what was asked for. Heights at or
+above the top of the world are no longer counted, and the downward search that
+reads the surface is held inside the world for the same reason: started at 65535
+it walked sixty thousand positions of nothing, and stored the number it gave up at
+as a surface height of -1.
+
+Found by standing a server up on a world of its own with the holes in it and
+asking the check what it could see, rather than by reading the loader again.
+
+**The borrow-and-return machinery added in 0.40.1 is gone.** It force-loaded each
+column the map asked for and gave it back afterwards, against a cause that turned
+out not to be the cause. Asking the server for a column and reading it when the
+game says it has arrived is enough on its own — six holes punched into a map are
+filled three seconds after the server starts — so the ninety lines that could
+unload ground out from under a player are not there any more.
+
+## 0.40.1
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared. A map holding
+chunk-shaped holes should fill them within a minute of a player being on; the
+export line says what happened either way.
+
+**The repair holds the ground it asks for.** Reverted in 0.40.2: the columns it
+was written for were never the problem. The line below is the part of this release
+that mattered.
+
+**The export line says which way a column was unreadable.** "no longer loaded"
+was said both to a column the server holds nothing for and to one it holds a map
+chunk for with no blocks under it. Those are a load that never happened and a load
+that was undone, they want different fixes, and saying one word for both sent a
+whole session's reading the wrong way. It now says `3 not there to read (3 with no
+map chunk, 0 with no blocks under it)`.
+
+## 0.40.0
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited. The map stops drawing the perimeters round trader camps on the
+first beat after the upgrade; `[claims] worldgen = true` in the settings puts them
+back. A map already holding chunk-shaped holes fills them in within a minute of
+the server starting rather than never.
+
+**The claims the world made for itself are not sent to the map.** The game
+protects a trader camp, a story structure and a tiled dungeon with a land claim,
+and those carry an owner's name with no owner behind them — which is the whole of
+what tells them from a player's. They exist from the moment that ground generated
+rather than from the moment somebody found it, so a web map drawing them handed
+every reader the location of every trader on the server. They are left out of the
+feed rather than left to the page to hide, because a claim that reached a browser
+is a claim anybody may read out of it. Whose a claim is now has one owner in the
+code as well: who may draw one and what counts as somebody's land are answered
+from the same fact.
+
+**The map repairs its own holes instead of asking for them forever.** A chunk the
+map could not read was asked for at the head of an export and read on the next
+one — and the server ages an untouched column out of memory in under ten seconds,
+where the export beat is ten. So every column asked for arrived, sat there, and
+was gone again before anything looked at it: the count of columns owed a read
+stood still while every beat faithfully asked for them, and four chunk-shaped
+holes stayed in the middle of finished terrain for as long as the world ran. The
+ground is now read when the game says it has arrived, a second later rather than a
+beat later, which is well inside the life of a column nobody is standing near.
+
+**Repairing the map is its own thing.** `Repair` owns the columns the map is owed,
+the asking for them and the reading of them when they land; `DirtyColumns` is back
+to the two states it is actually about — changed, and on disk. The timing bug
+above was a direct consequence of the repair having no clock of its own and
+borrowing the export's.
+
+**The export line about the repair reads.** "asked for 8 of 4 owed a read" was a
+sentence this printed: what was asked for is counted when the asking happens and
+what is still owed when the line is written, and columns settle in between. It
+says "asked the server for 8, 4 still owed" now.
+
+**`/wl status` says how many claims the map draws**, beside how many the server
+has, so a map showing fewer is visibly a setting rather than a claim gone missing.
+
+## 0.39.2
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared and nothing
+has to be edited. A map already holding chunk-shaped holes fills them in on its
+own over the following minutes, or at once on `/wl export`.
+
+**A chunk the map could not read is asked for rather than forgotten.** A map
+chunk outlives the blocks under it, so a column marked dirty and reached after
+its blocks had gone cannot be read — 0.38.1 stopped recording that as air, which
+was right, but it then set the column aside and waited for the server to load it
+again. Nothing was going to. The server loads a column when somebody walks to it,
+and a column at the trailing edge of a path nobody retraces is never loaded
+again, so it stayed a single chunk of nothing in the middle of finished terrain,
+one per few hundred explored, permanently. `/wl export` could not clear them
+either: it exports what is in memory, and what was missing was precisely what was
+not. Columns owed a read are now remembered and the server is asked to load them
+— a few on every export, and up to 256 on the command, walking the list from
+where the last pass stopped. They arrive, the load marks them changed the way any
+load does, and the next export writes them; nothing else in the export had to
+change to make that work.
+
+**A map on disk says where its own holes are.** The list of columns owed a read
+is memory, and a restart would forget every hole already made — so the start now
+reads them back off the map itself: a chunk the map does not hold, with mapped
+terrain on all four sides, is somewhere a player has been that never got written.
+The map's edge is not that and is left alone; enclosure is the whole of the
+difference, and without it a repair would have the server generate the world
+outward for as long as it ran. The count is logged at start.
+
+**`/wl status` says how many columns are owed.** Beside the count of columns
+waiting to be read, which is work in hand, is the count of columns that cannot be
+read until the server hands their blocks back — a number that should sit near
+zero and fall on its own.
+
 ## 0.39.1
 
 **Deploy note:** both halves, upgraded together. Nothing is cleared and nothing

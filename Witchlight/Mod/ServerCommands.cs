@@ -46,7 +46,9 @@ public partial class WitchlightSystem
                 .RequiresPlayer()
                 .HandleWith(OnMarkHere)
             .EndSubCommand()
-            .BeginSubCommand(Permissions.Export, "Write the surface of every loaded chunk")
+            .BeginSubCommand(
+                Permissions.Export,
+                "Write the surface of every loaded chunk, and ask for the ones missing")
                 .HandleWith(OnExport)
             .EndSubCommand()
             .BeginSubCommand(
@@ -146,9 +148,16 @@ public partial class WitchlightSystem
     }
 
     /// <summary>
-    /// Writes the loaded world's surface. Exporting what is in memory keeps this
-    /// a command an operator can run on a live server; chunks nobody has visited
-    /// are not in memory and are not in the export.
+    /// Writes the loaded world's surface, and asks the server to load the columns
+    /// the map is owed and could not read.
+    ///
+    /// Exporting what is in memory keeps this a command an operator can run on a
+    /// live server; chunks nobody has visited are not in memory and are not in the
+    /// export. The asking is what makes it a repair as well as an export: a column
+    /// whose blocks had gone when the map wanted them cannot be read by trying
+    /// harder, only by having them back, and this is where an operator says so.
+    /// They arrive over the next few seconds and land in the export after them, so
+    /// the message counts what was asked for rather than what came back.
     /// </summary>
     private TextCommandResult OnExport(TextCommandCallingArgs args)
     {
@@ -202,15 +211,29 @@ public partial class WitchlightSystem
                 + $", {_origins.Known} with the block they were made on",
             $"icons: {_icons?.Count ?? 0} for drawing them",
             $"portraits: {Portraits.Count(Settings.Exports)} sent by players",
-            $"claims: {ClaimFeed.Count(api)} on this server",
+            // Both numbers, because they differ whenever the world's own
+            // perimeters are hidden, and a map drawing fewer claims than the
+            // server has is a setting rather than a fault.
+            $"claims: {ClaimFeed.Count(api)} on this server, "
+                + $"{ClaimFeed.Drawn(api)} drawn on the map",
             $"players out: {_service?.PlayersHealth ?? "not started"}",
             $"markers out: {_service?.MarkersHealth ?? "not started"}",
             $"claims out: {_service?.ClaimsHealth ?? "not started"}",
             $"waiting: {_exporter?.Waiting ?? 0} columns changed since then",
+            // Named separately from the line above because it is a different kind
+            // of waiting: those columns are work in hand, and these are work the
+            // server has to be asked for before it can be done at all — a chunk
+            // whose blocks had gone when the map wanted them, or one the backfill
+            // found in the savegame that the map has never drawn.
+            $"owed: {_exporter?.Withheld ?? 0} columns to ask the server for",
             // Only while one is running. A seed is a state a server passes through
             // rather than one it sits in, and a line saying it is not seeding is a
             // line every reader has to skip for the rest of the world's life.
             _seeding?.Describe(),
+            // Only while there is any. A map with nothing left to ask the
+            // savegame about is the ordinary state, and a line saying so is a
+            // line every reader has to skip for the rest of the world's life.
+            _exporter?.Backfilling,
         ];
 
         return TextCommandResult.Success(string.Join("\n", lines.Where(line => line is not null)));

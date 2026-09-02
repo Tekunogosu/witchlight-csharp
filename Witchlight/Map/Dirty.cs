@@ -15,11 +15,18 @@ namespace Witchlight;
 ///
 /// The set holds a coordinate pair per changed column, so a quiet server
 /// accumulates nothing and the export it triggers is empty.
+///
+/// Two collections, because a column is in one of two states here: changed and
+/// waiting to be read, or already on disk. A column that is wanted and cannot be
+/// read at all is the third thing that can be true of one, and it is not a state
+/// of this bookkeeping — it is work the server has to be asked for, which is
+/// <see cref="Repair"/>'s.
 /// </summary>
 public sealed class DirtyColumns
 {
     private readonly HashSet<(int, int)> _dirty = new();
     private readonly HashSet<(int, int)> _exported = new();
+
     private readonly object _gate = new();
 
     /// <summary>
@@ -111,16 +118,29 @@ public sealed class DirtyColumns
     public void Restore(IEnumerable<(int, int)> columns) => AddAll(_dirty, columns);
 
     /// <summary>
-    /// Gives up on columns that left memory before they could be read, by
-    /// forgetting that they were ever exported.
+    /// Drops the record of having exported these columns.
     ///
-    /// They are not held dirty: a chunk that is gone cannot be read, and keeping
-    /// it on the pile would leave the set permanently non-empty, which is the one
-    /// state that costs an idle server a full pass over the map every tick.
-    /// Loading it again raises ChunkDirty, and with no record of having exported
-    /// it that counts as a change.
+    /// For a column that left memory before it could be read. It is not held
+    /// dirty: a chunk that is gone cannot be read, and keeping it on the pile
+    /// would leave the set permanently non-empty, which is the one state that
+    /// costs an idle server a full pass over the map every tick. Forgetting is
+    /// what makes it readable again — loading it raises ChunkDirty, and with no
+    /// record of an export that counts as a change.
+    ///
+    /// Forgetting alone was never enough to fill the hole, because nothing was
+    /// going to load that column: see <see cref="Repair"/>, which the exporter
+    /// tells at the same moment.
     /// </summary>
-    public void Defer(IEnumerable<(int, int)> columns) => RemoveAll(_exported, columns);
+    public void Forget(IEnumerable<(int, int)> columns)
+    {
+        lock (_gate)
+        {
+            foreach (var column in columns)
+            {
+                _exported.Remove(column);
+            }
+        }
+    }
 
     /// <summary>Records that these columns are now in the export on disk.</summary>
     public void Exported(IEnumerable<(int, int)> columns) => AddAll(_exported, columns);
@@ -139,18 +159,6 @@ public sealed class DirtyColumns
             foreach (var column in columns)
             {
                 into.Add(column);
-            }
-        }
-    }
-
-    /// <summary>And the other direction, for the one caller that takes them out.</summary>
-    private void RemoveAll(HashSet<(int, int)> from, IEnumerable<(int, int)> columns)
-    {
-        lock (_gate)
-        {
-            foreach (var column in columns)
-            {
-                from.Remove(column);
             }
         }
     }

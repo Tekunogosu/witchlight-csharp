@@ -22,17 +22,95 @@ public sealed class ColumnSet
     public IReadOnlyCollection<(int, int)> Moved { get; init; } = new List<(int, int)>();
 
     /// <summary>
-    /// Columns wanted but no longer in memory. Nothing can be read for them now,
-    /// and they are not owed a retry either: the server raises ChunkDirty again
-    /// when it loads one, so the way back is to forget having exported it.
+    /// Columns wanted but not there to read. Nothing can be read for them now, so
+    /// they go to <see cref="Repair"/>, which asks the server for them.
     /// </summary>
     public IReadOnlyCollection<(int, int)> Unloaded { get; init; } = new List<(int, int)>();
+
+    /// <summary>
+    /// What moved in the columns that moved, in positions rather than in columns.
+    ///
+    /// A column counts as changed the moment one of its 1024 positions differs,
+    /// so the count of changed columns says how much of the map was rewritten and
+    /// nothing at all about why. These say why: a handful of positions with a new
+    /// block on them is somebody building, and a thousand positions whose climate
+    /// moved is a field this map has no business re-reading drifting under it.
+    /// Only columns already on disk are counted — a column being written for the
+    /// first time differs everywhere, trivially, and would drown the rest.
+    /// </summary>
+    public Moves Changes { get; init; }
+
+    /// <summary>
+    /// How many of those the server holds nothing at all for, against how many it
+    /// holds a map chunk for and no blocks under it.
+    ///
+    /// Two counts rather than one, because they are two different things going
+    /// wrong and only the second is the one this code was written for. A column
+    /// the map asked the server to load and that comes back with no map chunk is
+    /// a load that did not happen; one that comes back with a map chunk and no
+    /// blocks is a load that happened and was undone. They are the same word in
+    /// the log otherwise, and telling them apart is the difference between aiming
+    /// a fix and guessing at one.
+    /// </summary>
+    public int Absent { get; init; }
+    public int Emptied { get; init; }
 
     /// <summary>
     /// Columns in memory whose height map is not built yet. Transient, so these
     /// stay dirty and are tried again on the next export.
     /// </summary>
     public IReadOnlyCollection<(int, int)> Unready { get; init; } = new List<(int, int)>();
+}
+
+/// <summary>
+/// What differed between a column as it was stored and as it reads now, counted
+/// in positions.
+///
+/// Four fields go into a position and any one of them can rewrite a region, so
+/// which one it was is the difference between a map following the world and a map
+/// chasing its own tail.
+/// </summary>
+public readonly record struct Moves(int Positions, int Blocks, int Heights, int Climate)
+{
+    public static Moves operator +(Moves one, Moves two) =>
+        new(one.Positions + two.Positions,
+            one.Blocks + two.Blocks,
+            one.Heights + two.Heights,
+            one.Climate + two.Climate);
+
+    /// <summary>What an export says about it, or nothing where nothing moved.</summary>
+    public string Said() =>
+        Positions == 0
+            ? ""
+            : $" ({Positions} positions: {Blocks} blocks, {Heights} heights, {Climate} climate)";
+
+    /// <summary>
+    /// Where one stored column and the same column read again disagree.
+    ///
+    /// Walked a position at a time rather than compared as a block of bytes,
+    /// because the answer wanted is not whether they differ — the caller has
+    /// already asked that — but in what.
+    /// </summary>
+    public static Moves Between(byte[] was, byte[] now)
+    {
+        var moves = new Moves();
+        if (was.Length != now.Length)
+        {
+            return moves;
+        }
+
+        for (var at = 0; at + Regions.EntryBytes <= now.Length; at += Regions.EntryBytes)
+        {
+            var block = was[at] != now[at] || was[at + 1] != now[at + 1];
+            var height = was[at + 2] != now[at + 2] || was[at + 3] != now[at + 3];
+            var climate = was[at + 4] != now[at + 4] || was[at + 5] != now[at + 5];
+            if (block || height || climate)
+            {
+                moves += new Moves(1, block ? 1 : 0, height ? 1 : 0, climate ? 1 : 0);
+            }
+        }
+        return moves;
+    }
 }
 
 /// <summary>Reads the surface out of loaded chunks.</summary>
@@ -122,12 +200,16 @@ public static class ColumnPump
     }
 
     /// <summary>
-    /// Which regions hold a column whose season has moved.
+    /// The columns whose season has moved.
     ///
-    /// The season is stored per chunk, so a year that advances a step rewrites
-    /// whatever holds those chunks whether a block moved or not. A step is a
-    /// month — see `SeasonAt` — so this is a dozen redraws a year rather than one
-    /// every few minutes, and still worth asking about rather than assuming.
+    /// Columns rather than the regions holding them, which is what they used to
+    /// be. A season lives in a region's directory now, so a year advancing costs
+    /// sixteen bytes for each chunk that crossed the step — where naming the
+    /// region meant repacking every chunk in it, including the great majority
+    /// whose season had not moved at all.
+    ///
+    /// A step is a month, see <see cref="SeasonAt"/>, so this is a dozen redraws
+    /// a year rather than one every few minutes.
     /// </summary>
     public static HashSet<(int, int)> SeasonsMoved(
         IReadOnlyDictionary<(int, int), byte> before,
@@ -138,26 +220,25 @@ public static class ColumnPump
         {
             if (!before.TryGetValue(column, out var was) || was != season)
             {
-                moved.Add(Regions.Of(column.Item1, column.Item2));
+                moved.Add(column);
             }
         }
         return moved;
     }
 
     /// <summary>
-    /// Loads the regions named, and re-reads the surface of the columns asked for
-    /// over the top of them.
+    /// Re-reads the surface of the columns asked for, and says which of them
+    /// differ from what the map already holds.
     ///
-    /// Only the regions that are about to be written are read. The rest of the map
-    /// is never touched, which is the whole point of splitting it up: a chunk
-    /// changing costs the square it sits in rather than everything anyone has ever
-    /// explored.
+    /// Only those columns are read back off disk — not the regions holding them.
+    /// A region is two hundred and fifty-six chunks and an export usually wants
+    /// three of them, so unpacking the square to compare a corner of it was most
+    /// of what an export cost.
     /// </summary>
     public static ColumnSet Gather(
         ICoreServerAPI api,
         string dir,
         IReadOnlyCollection<(int, int)> wanted,
-        IReadOnlyCollection<(int, int)> regions,
         System.Func<int, bool> shows,
         Microblocks chiselled)
     {
@@ -167,17 +248,22 @@ public static class ColumnPump
         var surface = new Surface(area);
 
         var known = new Dictionary<(int, int), byte[]>();
-        foreach (var (rx, rz) in regions)
+        foreach (var byRegion in Grouped(wanted))
         {
-            foreach (var (column, stored) in Regions.Read(Regions.PathOf(dir, rx, rz), edge))
+            var (rx, rz) = byRegion.Key;
+            foreach (var (column, stored) in
+                     Regions.Read(Regions.PathOf(dir, rx, rz), edge, byRegion.Value))
             {
                 known[column] = stored.Record;
             }
         }
 
         var unloaded = new List<(int, int)>();
+        var absent = 0;
+        var emptied = 0;
         var unready = new List<(int, int)>();
         var moved = new List<(int, int)>();
+        var changes = new Moves();
         var reread = 0;
 
         foreach (var (cx, cz) in wanted)
@@ -189,6 +275,7 @@ public static class ColumnPump
                 // dirty would keep the set permanently non-empty for a chunk that
                 // cannot be read, and every export would walk the map to find out.
                 unloaded.Add((cx, cz));
+                absent++;
                 continue;
             }
 
@@ -203,9 +290,10 @@ public static class ColumnPump
             {
                 // The heightmap is here and the blocks are not, which reads as a
                 // chunk of air rather than as an absence. Held with the ones that
-                // were not there at all: both are answered by the chunk being
-                // marked dirty again when it next loads.
+                // were not there at all: both are answered by the server being
+                // asked for the column again.
                 unloaded.Add((cx, cz));
+                emptied++;
                 continue;
             }
 
@@ -216,8 +304,17 @@ public static class ColumnPump
             // Any block moving marks a chunk dirty and most of those are
             // underground, where the surface does not move. Comparing here is what
             // keeps mining out of the map's write path.
-            if (!known.TryGetValue((cx, cz), out var stored) || !record.AsSpan().SequenceEqual(stored))
+            if (!known.TryGetValue((cx, cz), out var stored))
             {
+                known[(cx, cz)] = record;
+                moved.Add((cx, cz));
+            }
+            else if (!record.AsSpan().SequenceEqual(stored))
+            {
+                // Counted only here, where there is something to compare against.
+                // A column reaching disk for the first time differs everywhere and
+                // would say nothing about why any of them do.
+                changes += Moves.Between(stored, record);
                 known[(cx, cz)] = record;
                 moved.Add((cx, cz));
             }
@@ -228,7 +325,10 @@ public static class ColumnPump
             Records = known,
             Reread = reread,
             Moved = moved,
+            Changes = changes,
             Unloaded = unloaded,
+            Absent = absent,
+            Emptied = emptied,
             Unready = unready,
         };
     }
@@ -252,64 +352,101 @@ public static class ColumnPump
     /// The vertical chunk holding the highest ground in this column is the one
     /// that has to be there: it is where the scan starts and, on ordinary
     /// terrain, where it stops.
+    ///
+    /// **A rain height above the world is not a height.** The game leaves
+    /// `ushort.MaxValue` in that map wherever rain never stopped, and this took
+    /// the highest number it found — so one such position spoke for the whole
+    /// chunk. It asked for the vertical chunk two thousand layers up, was told
+    /// there is none, and set aside a column whose blocks were all in memory as
+    /// one whose blocks had gone. Nothing about a column ever changes what its
+    /// rain map says, so that column was unreadable for the life of the world: a
+    /// chunk-shaped hole in the middle of finished terrain that no export, no
+    /// walk back to it and no asking the server to load it could ever fill. It is
+    /// what three attempts at filling those holes were actually up against.
     /// </summary>
     private static bool Readable(
         ICoreServerAPI api, int chunkX, int chunkZ, int edge, IMapChunk mapChunk)
     {
+        return api.WorldManager.GetChunk(chunkX, Ceiling(api, mapChunk) / edge, chunkZ) is not null;
+    }
+
+    /// <summary>
+    /// The highest real ground in one chunk, in blocks.
+    ///
+    /// Real, which is the whole of what this is for: what is read out of the rain
+    /// map is a height where rain stopped and `ushort.MaxValue` where it never
+    /// did, and only one of those is somewhere the world has a block. Anything at
+    /// or above the top of the world is the second kind and is not counted.
+    ///
+    /// Zero where a chunk holds nothing else, which is a column open to the sky
+    /// from top to bottom — the bottom of the world is as good a place as any to
+    /// start looking for ground in one, and it is a chunk the column certainly
+    /// has.
+    /// </summary>
+    private static int Ceiling(ICoreServerAPI api, IMapChunk mapChunk)
+    {
+        var world = api.WorldManager.MapSizeY;
         var top = 0;
         foreach (var height in mapChunk.RainHeightMap)
         {
-            if (height > top)
+            if (height > top && height < world)
             {
                 top = height;
             }
         }
-
-        return api.WorldManager.GetChunk(chunkX, top / edge, chunkZ) is not null;
+        return top;
     }
 
     /// <summary>
-    /// Writes the regions named, and returns where the year had reached for every
-    /// chunk in them so the next export can tell whether it has moved.
+    /// Columns filed under the region that holds them.
+    ///
+    /// Everything that reads or writes the map does so a region at a time, since
+    /// a region is a file; everything that decides what to read or write thinks in
+    /// columns. This is the one place that turns the second into the first.
     /// </summary>
-    public static Dictionary<(int, int), byte> Write(
-        ICoreServerAPI api,
-        string dir,
-        ColumnSet set,
-        IReadOnlyCollection<(int, int)> regions)
+    private static Dictionary<(int, int), List<(int, int)>> Grouped(
+        IEnumerable<(int, int)> columns)
     {
-        var edge = api.WorldManager.ChunkSize;
-        var scratch = new BlockPos(0);
-        var wanted = new HashSet<(int, int)>(regions);
-
-        var byRegion = new Dictionary<(int, int), Dictionary<(int, int), Regions.Stored>>();
-        var seasons = new Dictionary<(int, int), byte>();
-
-        foreach (var (column, record) in set.Records)
+        var byRegion = new Dictionary<(int, int), List<(int, int)>>();
+        foreach (var column in columns)
         {
             var region = Regions.Of(column.Item1, column.Item2);
-            if (!wanted.Contains(region))
-            {
-                continue;
-            }
-
             if (!byRegion.TryGetValue(region, out var held))
             {
-                held = new Dictionary<(int, int), Regions.Stored>();
-                byRegion[region] = held;
+                held = byRegion[region] = new List<(int, int)>();
             }
-
-            var season = SeasonAt(api, column.Item1, column.Item2, edge, scratch);
-            seasons[column] = season;
-            held[column] = new Regions.Stored(season, record);
+            held.Add(column);
         }
+        return byRegion;
+    }
 
-        foreach (var ((rx, rz), held) in byRegion)
+    /// <summary>
+    /// Writes the changes named, and says how many bytes that took.
+    ///
+    /// Grouped by region because a region is a file, and handed to that file as
+    /// changes rather than as contents: what reaches the disk is the chunks that
+    /// moved and the entries naming them, never the two hundred and fifty-odd
+    /// chunks in the same square that did not.
+    ///
+    /// The bytes are counted and reported because they are the point. An export
+    /// that says it wrote five regions says nothing about whether that was five
+    /// kilobytes or five hundred, and the difference between those two was a
+    /// release.
+    /// </summary>
+    public static long Write(
+        string dir, int edge, IReadOnlyDictionary<(int, int), Regions.Update> updates)
+    {
+        var written = 0L;
+        foreach (var (region, columns) in Grouped(updates.Keys))
         {
-            Regions.Write(dir, edge, rx, rz, held);
+            var held = new Dictionary<(int, int), Regions.Update>();
+            foreach (var column in columns)
+            {
+                held[column] = updates[column];
+            }
+            written += Regions.Write(dir, edge, region.Item1, region.Item2, held);
         }
-
-        return seasons;
+        return written;
     }
 
     /// <summary>
@@ -381,6 +518,7 @@ public static class ColumnPump
     {
         var accessor = api.World.BlockAccessor;
         var position = new BlockPos(0);
+        var ceiling = api.WorldManager.MapSizeY - 1;
 
         for (var dz = 0; dz < edge; dz++)
         {
@@ -390,7 +528,13 @@ public static class ColumnPump
                 var worldX = chunkX * edge + dx;
                 var worldZ = chunkZ * edge + dz;
 
-                var top = (int)mapChunk.RainHeightMap[i];
+                // Held inside the world, for the reason `Ceiling` is: this is
+                // where the search downward starts, and a position whose rain
+                // never stopped says 65535. Started there, the search walks sixty
+                // thousand positions of nothing before it reaches the sky, and
+                // what it stores for a column it finds nothing in is that number
+                // squeezed into a signed short — which is a surface at -1.
+                var top = Math.Min((int)mapChunk.RainHeightMap[i], ceiling);
                 var y = top;
                 var id = 0;
 

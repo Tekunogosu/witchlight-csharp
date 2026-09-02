@@ -94,7 +94,9 @@ public partial class WitchlightSystem : ModSystem
         // the same reason, and the two are always the same number — they ship as
         // one archive, so two different numbers in one log is a mis-deployment.
         api.Logger.Notification(
-            "[witchlight] {0} ready, exporting every {1}s", Mod.Info.Version, ExportIntervalMs / 1000);
+            "[witchlight] {0} ready, exporting every {1}s",
+            Mod.Info.Version,
+            Settings.ExportIntervalMs / 1000);
     }
 
     /// <summary>
@@ -269,7 +271,7 @@ public partial class WitchlightSystem : ModSystem
         // A tick listener rather than a load event: it is guaranteed to fire, and
         // repeating it keeps the map current without anyone typing a command.
         api.Event.RegisterGameTickListener(
-            Every("exporting", () => Export("timer")), ExportIntervalMs);
+            Every("exporting", () => Export("timer")), Settings.ExportIntervalMs);
 
         // A colour the map has not got is not something a player fixes by
         // rejoining, and on a small server nobody may rejoin for days — so the
@@ -279,7 +281,7 @@ public partial class WitchlightSystem : ModSystem
         api.Event.RegisterGameTickListener(
             Every("asking for a palette", () =>
                 _palettes?.AskAround(api.World.AllOnlinePlayers.OfType<IServerPlayer>())),
-            ExportIntervalMs);
+            Settings.ExportIntervalMs);
 
         // Players move, so this goes far more often than the terrain — and it
         // goes over the socket rather than to a file, because a position is worth
@@ -595,25 +597,4 @@ public partial class WitchlightSystem : ModSystem
     private const int SeedRadius = 8;
 
 
-    /// <summary>
-    /// How often the surface is re-exported.
-    ///
-    /// This is most of the wait between a player walking into ground nobody has
-    /// been to and seeing it drawn: everything after it — the service noticing,
-    /// the levels above being built, the page asking — adds up to about three
-    /// seconds together, against up to thirty spent here.
-    ///
-    /// Shorter costs the server almost nothing extra, because the work is per
-    /// column rather than per export and the same columns are read either way.
-    /// It is measurably kinder to the tick: an export is timed, and thirty
-    /// seconds of somebody exploring gathered 632 columns into one 380ms pass,
-    /// where the same ground taken in ten second pieces is three passes near a
-    /// hundred. A tick is 33ms, so the long pass is the one that stutters.
-    ///
-    /// What it does cost is disk. A region is rewritten whole however few of its
-    /// columns moved, so a region under somebody walking through it is written
-    /// three times where it used to be written once. That is the trade this
-    /// number makes, and the reason it is not lower still.
-    /// </summary>
-    private const int ExportIntervalMs = 10000;
 }

@@ -64,9 +64,26 @@ ran.
 
 The map is a **directory of regions**, eight chunks on a side. That is 256 blocks,
 which is exactly one of the renderer's tiles, so a chunk that changes belongs to
-one file and one tile: the export writes that square, and the renderer reloads
-that square and redraws that tile. Each region is gzipped, which runs between five
-and eight times smaller on real exports.
+one file and one tile: the export writes that chunk, and the renderer reloads that
+square and redraws that tile.
+
+**A chunk is stored and written on its own**, behind a directory of fixed size at
+the head of each region — see `Map/Regions.cs` for the layout. A region used to be
+one gzip stream, so writing one chunk meant repacking every chunk beside it: a
+quarter of a megabyte to record six kilobytes of change. Now a chunk's bytes are
+appended and its entry rewritten, and nothing else in the file is touched.
+
+Payloads are appended and never overwritten, which is what makes a torn write
+survivable — a run that dies mid-append leaves a directory still pointing where it
+always pointed. Each chunk carries a CRC-32, and one whose bytes do not answer to
+it is read as a chunk the map does not hold, which the repair then fetches and
+writes again; a map damaged by a power cut heals rather than needing to be thrown
+away. A region is packed down once the bytes nothing points at outweigh the bytes
+something does.
+
+A chunk's season lives in its directory entry, so a year turning is sixteen bytes
+per chunk rather than a repacking of the map, and the start-up survey reads
+seasons and holes without decompressing anything at all.
 
 Only what moved is read again. The server marks a chunk dirty when a block in it
 moves and when it loads one, and the export reads those columns alone — a chunk
@@ -118,10 +135,12 @@ autostart = true
 export = "admin"
 login = "player"
 
-# Who may see the land claims on the map, and who may draw one from it.
+# Who may see the land claims on the map, who may draw one from it, and
+# whether the world's own trader perimeters are drawn at all.
 [claims]
 view = "player"
 create = "claimland"
+worldgen = false
 ```
 
 Turn `autostart` off to run `witchlight serve` by hand instead, which is what a map
@@ -468,6 +487,52 @@ as exported when the map on disk is walked at start, and the server's own
 `ChunkDirty` brings them back as they load. The walk asks this of bytes it has
 already decompressed to read the seasons, so it costs nothing extra.
 
+**A rain height above the world is not a height.** The export reads the surface
+starting from the rain heightmap, and checks the blocks are really in memory by
+asking for the vertical chunk holding this chunk's highest ground. It took the
+highest number in that map — and the game leaves `ushort.MaxValue` wherever rain
+never stopped, so one such position spoke for the whole chunk: the check asked for
+the vertical chunk two thousand layers up, was told there is none, and set aside a
+column whose blocks were all in memory as one whose blocks had gone. Nothing about
+a column ever changes what its rain map says, so that column was unreadable for
+the life of the world — a chunk-shaped hole in the middle of finished terrain that
+no export, no walk back to it and no asking the server to load it could fill.
+Heights at or above the top of the world are not counted now, and the downward
+search is held inside the world for the same reason.
+
+**The map draws the ground the game already has.** A map only ever knew what it
+had been told: a column reaches it when somebody walks there while the mod is
+running, so terrain explored before witchlight was installed was invisible to it —
+on one world the savegame held 7957 columns and the map had drawn 6011. The mod
+walks outward from the edges of what the map holds and asks the game whether the
+savegame has the column beside it, through `IWorldManagerAPI.TestMapChunkExists`,
+which answers out of the same database the server loads from. A column it says yes
+to goes to the repair, which already knows how to fetch one and write it.
+
+Asking the game rather than reading the savegame is the whole design.
+`Map/Backfill.cs` needs to know nothing about the game's chunk format — a private,
+versioned thing this mod would otherwise have to reimplement and keep in step
+forever — and it cannot make the server generate world: a column is only ever
+considered because a mapped one sits beside it, and only asked for when the save
+already holds it. So it walks to the edge of what has been explored and stops.
+`/witchlight status` says how much is left.
+
+**A column the map could not read at all is asked for.** A map chunk outlives the
+blocks under it, so a column marked dirty and reached after its blocks have gone
+cannot be read — and nothing brings one back on its own, because the server loads
+a column when somebody walks to it and a column at the trailing edge of a path
+nobody retraces is never loaded again. `Map/Repair.cs` holds those, asks the server
+for a few on every export beat and for a few hundred on `/witchlight export`, and
+reads each one when the game says it has arrived rather than on the next beat: an
+untouched column is aged out of memory in under ten seconds and the export beat is
+ten. The same list is rebuilt at start from the map on disk — a chunk the map does
+not hold with mapped terrain on all four sides is somewhere a player has been that
+never got written — which is what carries a hole across a restart. The map's own
+edge is not that and is left alone, or the repair would have the server generate
+the world outward for as long as it ran. `/witchlight status` says how many columns
+are owed, and the export line says which of the two ways a column was unreadable:
+`3 not there to read (3 with no map chunk, 0 with no blocks under it)`.
+
 Columns are written as `u16 blockId, i16 surfaceY, u8 temperature, u8 rainfall`,
 six bytes each, 1024 to a chunk, after a per-chunk header carrying the season.
 Temperature uses the game's own `Climate.DescaleTemperature`, and the season comes
@@ -583,19 +648,31 @@ area, so a claim built out of several adjacent boxes keeps the shape of its
 boundary. Somebody the server lets claim land can draw a new one on the map, and
 the game makes it.
 
-Two settings, because there are two questions:
+Three settings, because there are three questions:
 
 ```toml
 [claims]
 view = "player"       # see where the claims are
 create = "claimland"  # draw a new one from the map
+worldgen = false      # draw the world's own perimeters too
 ```
 
-Both take `admin`, `player`, or any privilege the game knows, exactly as
+The first two take `admin`, `player`, or any privilege the game knows, exactly as
 `[commands]` does. `view` starts open: the game already sends every claim to every
 client and draws the borders for anyone holding the right tool, so a map that hid
 them would tell players less than the game does. `create` starts at `claimland`,
 which is what the game asks of `/land claim`.
+
+`worldgen` is not a permission. The game protects a trader camp, a story structure
+and a tiled dungeon with a land claim of its own, and those are what tells them
+apart from a player's: an owner's name written on them and no owner behind it.
+They exist from the moment that ground generated rather than from the moment
+anybody found one, and a web map is the one place every boundary on a server can
+be read at once — so drawing them hands every reader the location of every trader.
+It starts `false`, and turning it on gives a map that shows the lot. They are left
+out of what this half sends rather than left to the page to hide, because a claim
+that reached a browser is a claim anybody may read out of it. `/witchlight status`
+says how many claims the map draws beside how many the server has.
 
 A claim can also be renamed, re-permissioned and given up from the map. Those are
 its owner's, or anybody holding `commandplayer` — what vanilla's `/land adminfree`

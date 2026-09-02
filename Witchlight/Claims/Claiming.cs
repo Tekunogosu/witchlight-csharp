@@ -343,7 +343,16 @@ public static class Claiming
             return "this server has no record of them, so it has no allowance to check";
         }
 
-        var everyones = api.World.Claims?.All ?? new List<LandClaim>();
+        // Read once and refused outright where there is none, rather than reached
+        // for twice. Asking `Claims?.All` and then adding through `Claims.Add` is
+        // two answers to whether this world has land claims at all, and the
+        // second of them would put a claim nowhere and report that it worked.
+        if (api.World.Claims is not { } held)
+        {
+            return "this world has no land claims to add to";
+        }
+
+        var everyones = held.All ?? new List<LandClaim>();
         var mine = everyones
             .Where(claim => claim?.OwnedByPlayerUid == wanted.Uid)
             .ToList();
@@ -412,7 +421,7 @@ public static class Claiming
         // The game's own API, which indexes the claim by region, saves it with the
         // world and tells every client. Nothing here writes any of that down: a
         // second copy of where the claims are is a second thing to be wrong.
-        api.World.Claims.Add(claiming);
+        held.Add(claiming);
         return null;
     }
 }
