@@ -209,13 +209,31 @@ public sealed class Repair
     private const int SettleMs = 1000;
 
     /// <summary>
-    /// How many owed columns one beat of the export asks the server to load.
+    /// How many columns the server may be asked to load at once.
     ///
-    /// Small, because this runs forever on a live server and the map heals in the
-    /// background rather than in a hurry: a handful every export is a few hundred
-    /// an hour, which is more than a session loses.
+    /// Each is a short blocking load on the server's chunk thread, so this is how
+    /// long that thread may be held in one go. Four is a fraction of the thirty
+    /// columns it generates per tick of its own accord — and asking for more than
+    /// a handful at a time is not merely slower: the server puts a request on a
+    /// queue its chunk thread drains, and a queue overrun clears itself out from
+    /// under that thread and takes the server down with it. <see cref="Seeding"/>
+    /// found that number the hard way and this is the same one, said once.
     /// </summary>
-    public const int PerExport = 8;
+    public const int PerStep = 4;
+
+    /// <summary>
+    /// How often that may be done.
+    ///
+    /// The gap is the point: it is what leaves the chunk thread free for the
+    /// players whose own chunks are queued behind these.
+    ///
+    /// On a clock of its own rather than on the export beat. Getting a column back
+    /// and writing what it says are different jobs at different speeds, and tying
+    /// them together meant a map rebuilding itself did so at whatever rate an
+    /// operator had chosen to write the disk at — sixty-five minutes for a map
+    /// that this fills in seven.
+    /// </summary>
+    public const int StepIntervalMs = 250;
 
     /// <summary>
     /// And how many a forced export asks for, which is an operator waiting for an

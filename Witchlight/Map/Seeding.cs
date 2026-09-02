@@ -66,7 +66,7 @@ public sealed class Seeding
         api.Logger.Notification(
             "[witchlight] seeding the map with {0} chunk columns around spawn, {1} at a time",
             columns.Count,
-            ColumnsPerStep);
+            Repair.PerStep);
         return new Seeding(api, columns, export);
     }
 
@@ -110,7 +110,7 @@ public sealed class Seeding
     /// </summary>
     public bool Step()
     {
-        for (var taken = 0; taken < ColumnsPerStep && _left.Count > 0; taken++)
+        for (var taken = 0; taken < Repair.PerStep && _left.Count > 0; taken++)
         {
             var (x, z) = _left.Dequeue();
             _api.WorldManager.LoadChunkColumnPriority(x, z);
@@ -126,14 +126,6 @@ public sealed class Seeding
         return _left.Count > 0;
     }
 
-    /// <summary>
-    /// How many columns are asked for at once.
-    ///
-    /// Each is a short blocking load on the server's chunk thread, so this is how
-    /// long that thread may be held in one go. Four is a fraction of the thirty
-    /// columns it generates per tick of its own accord.
-    /// </summary>
-    private const int ColumnsPerStep = 4;
 
     /// <summary>
     /// How often the map is written while the seed runs.
@@ -143,11 +135,4 @@ public sealed class Seeding
     /// </summary>
     private const int ColumnsPerExport = 64;
 
-    /// <summary>
-    /// How often the next few columns are asked for.
-    ///
-    /// The gap is the point: it is what leaves the chunk thread free for the
-    /// players whose own chunks are queued behind these.
-    /// </summary>
-    public const int StepIntervalMs = 250;
 }

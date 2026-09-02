@@ -273,6 +273,15 @@ public partial class WitchlightSystem : ModSystem
         api.Event.RegisterGameTickListener(
             Every("exporting", () => Export("timer")), Settings.ExportIntervalMs);
 
+        // Getting the ground back is not writing it, and the two run at their own
+        // speeds. A chunk load is work for the server's chunk thread and is paced
+        // against that; a write is paced against the disk, which an operator sets
+        // with `export_interval_ms`. Tied together, a map rebuilding itself did so
+        // at whatever rate somebody had chosen to write at.
+        api.Event.RegisterGameTickListener(
+            Every("fetching what the map is owed", () => _exporter?.Fetch()),
+            Repair.StepIntervalMs);
+
         // A colour the map has not got is not something a player fixes by
         // rejoining, and on a small server nobody may rejoin for days — so the
         // ask cannot only ride the join. On the export beat because that is the
@@ -329,7 +338,7 @@ public partial class WitchlightSystem : ModSystem
                     StopSeeding(api);
                 }
             }),
-            Seeding.StepIntervalMs);
+            Repair.StepIntervalMs);
     }
 
     /// <summary>Takes the seed's tick back once there is nothing left to ask for.</summary>

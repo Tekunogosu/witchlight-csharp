@@ -13,6 +13,21 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.41.1
+
+**Deploy note:** both halves, upgraded together. Nothing is cleared — a map part
+way through rebuilding keeps what it has and finishes about ten times faster.
+
+**Getting the ground back runs on its own clock.** The map asked the server for
+columns on the export beat, which is the beat an operator sets to decide how often
+the disk is touched — so a map rebuilding itself did so at whatever rate somebody
+had chosen to *write* at, and every recovered column waited out a gap sized for
+writing rather than for loading. Eight columns every ten seconds is fine for
+healing a hole; it is 65 minutes for a map of six thousand. Loading now steps four
+columns every 250ms, which is the rate `Seeding` established as safe years of
+nothing going wrong ago, and which is now said once for both of them rather than
+twice. **Measured on a map rebuilt from nothing: 92 chunks a minute became 909.**
+
 ## 0.41.0
 
 **Deploy note:** both halves, upgraded together. **The map is cleared and

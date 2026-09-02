@@ -90,7 +90,7 @@ public sealed class Exporter
         _repair = new Repair(api, columns =>
         {
             _dirty.MarkAll(columns);
-            Write("repair", force: false, asked: 0);
+            Write("repair", force: false);
         });
         _backfill = new Backfill(api, column => _repair.Owe(new[] { column }));
 
@@ -187,22 +187,44 @@ public sealed class Exporter
     /// </summary>
     public string? Export(string reason, bool force = false)
     {
-        // Before the write, and in this order: the frontier is walked a little
-        // ahead of the repair, so that what the repair asks the server for on the
-        // next beat is already waiting for it.
-        _backfill.Step(force ? Backfill.PerCommand : Backfill.PerExport);
-        return Write(reason, force, _repair.Ask(force ? Repair.PerCommand : Repair.PerExport));
+        // An operator asking for an export is asking for the map to catch up, so
+        // the command reaches for a few hundred columns at once where the beat
+        // reaches for a handful. The ordinary asking is not here at all — see
+        // `Fetch`, which runs on a clock of its own.
+        if (force)
+        {
+            _backfill.Step(Backfill.PerCommand);
+            _repair.Ask(Repair.PerCommand);
+        }
+        return Write(reason, force);
+    }
+
+    /// <summary>
+    /// Asks the server for a few of the columns the map wants, and the savegame
+    /// about a few it may want next.
+    ///
+    /// On a clock of its own rather than on the export beat, because getting a
+    /// column back and writing what it says are different jobs at different
+    /// speeds. Tied to the export, a map rebuilding itself did so at whatever rate
+    /// an operator had chosen to write the disk at — and every column recovered
+    /// waited out a beat sized for writing rather than for loading, which took a
+    /// map that fills in seven minutes and made it sixty-five.
+    ///
+    /// The frontier is walked first and a little faster, so the repair always has
+    /// something to ask for rather than running dry between steps.
+    /// </summary>
+    public void Fetch()
+    {
+        _backfill.Step(Backfill.PerStep);
+        _repair.Ask(Repair.PerStep);
     }
 
     /// <summary>
     /// Writes the regions that have moved. Returns what happened, or null if it
     /// failed — the caller decides how loudly to say so.
     ///
-    /// <paramref name="asked"/> is how many columns the repair has just asked the
-    /// server for, which is nothing this write does and part of what the beat it
-    /// belongs to has to report.
     /// </summary>
-    private string? Write(string reason, bool force, int asked)
+    private string? Write(string reason, bool force)
     {
         KeepWorldFacts();
 
@@ -221,7 +243,7 @@ public sealed class Exporter
 
         if (_dirty.Count == 0 && aged.Count == 0)
         {
-            return $"nothing has moved since the last export, on {reason}{Asked(asked)}";
+            return $"nothing has moved since the last export, on {reason}{Owing()}";
         }
 
         var wanted = _dirty.Take();
@@ -268,7 +290,7 @@ public sealed class Exporter
                 clock.Stop();
                 Wrote(wanted);
                 return $"{set.Reread} columns re-read, none changed the surface, "
-                    + $"in {clock.ElapsedMilliseconds}ms on {reason}{Missing(set)}{Asked(asked)}";
+                    + $"in {clock.ElapsedMilliseconds}ms on {reason}{Missing(set)}{Owing()}";
             }
 
             var written = ColumnPump.Write(dir, edge, updates);
@@ -285,7 +307,7 @@ public sealed class Exporter
                 + (aged.Count > 0 ? $", season moved in {aged.Count}" : "")
                 + $", {_seasons.Count} chunks mapped, in {clock.ElapsedMilliseconds}ms on {reason}"
                 + Missing(set)
-                + Asked(asked);
+                + Owing();
             _api.Logger.Notification("[witchlight] {0}", message);
             return message;
         }
@@ -354,16 +376,8 @@ public sealed class Exporter
             : $", {set.Unloaded.Count} not there to read ({set.Absent} with no map chunk, "
                 + $"{set.Emptied} with no blocks under it)";
 
-    /// <summary>
-    /// What an export says about the repair it asked for, or nothing.
-    ///
-    /// Two numbers rather than one out of the other: what was asked for is
-    /// counted when the asking happens and what is still owed when the line is
-    /// written, and columns settle in between — so "asked for 8 of 4 owed a read"
-    /// was a sentence this printed and nobody could read.
-    /// </summary>
-    private string Asked(int asked) =>
-        asked > 0 ? $", asked the server for {asked}, {_repair.Owed} still owed" : "";
+    /// <summary>What an export says about the columns still to come, or nothing.</summary>
+    private string Owing() => _repair.Owed > 0 ? $", {_repair.Owed} columns still owed" : "";
 
     /// <summary>Every chunk column the server currently holds in memory.</summary>
     private static IEnumerable<(int, int)> LoadedColumns(ICoreServerAPI api)

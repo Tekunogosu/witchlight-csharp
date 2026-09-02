@@ -136,14 +136,14 @@ public sealed class Backfill
                 + $"{_found} found so far that the map had never drawn";
 
     /// <summary>
-    /// How many columns one beat of the export asks the savegame about.
+    /// How many columns one step asks the savegame about.
     ///
     /// An existence test is a queued read of one row, so this is cheaper than the
     /// loading that follows it and is deliberately set above it: the frontier
     /// wants to be a little ahead of the repair, or the repair runs dry between
-    /// beats and the map fills more slowly than the server could manage.
+    /// steps and the map fills more slowly than the server could manage.
     /// </summary>
-    public const int PerExport = 24;
+    public const int PerStep = 2 * Repair.PerStep;
 
     /// <summary>
     /// And how many a forced export asks about, which is an operator who wants
