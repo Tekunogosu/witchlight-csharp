@@ -100,6 +100,7 @@ public sealed class MapService : IDisposable
     private readonly Feed _markers = new("markers", "/live/markers");
     private readonly Feed _claims = new("claims", "/live/claims");
     private readonly Feed _world = new("world", "/live/world");
+    private readonly Feed _dirty = new("dirty chunks", "/live/dirty");
 
     public string PlayersHealth => HealthOf(_players);
 
@@ -108,6 +109,8 @@ public sealed class MapService : IDisposable
     public string ClaimsHealth => HealthOf(_claims);
 
     public string WorldHealth => HealthOf(_world);
+
+    public string DirtyHealth => HealthOf(_dirty);
 
     /// <summary>What one feed last did, read from the thread that asked.</summary>
     private string HealthOf(Feed feed)
@@ -409,6 +412,13 @@ public sealed class MapService : IDisposable
 
     /// <summary>What the world's clock says, on its way to whoever is looking.</summary>
     public void World(string json) => Post(_world, json);
+
+    /// <summary>
+    /// Chunks that changed, on their way to the service ahead of the export that
+    /// will eventually write them to disk. Held in memory by the service only
+    /// long enough to pull each one and mark its tile stale — see `pull.rs`.
+    /// </summary>
+    public void Dirty(string json) => Post(_dirty, json);
 
     /// <summary>
     /// Every marker, when they are not what was sent last.

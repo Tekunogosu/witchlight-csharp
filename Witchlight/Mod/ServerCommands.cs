@@ -223,17 +223,12 @@ public partial class WitchlightSystem
             // Named separately from the line above because it is a different kind
             // of waiting: those columns are work in hand, and these are work the
             // server has to be asked for before it can be done at all — a chunk
-            // whose blocks had gone when the map wanted them, or one the backfill
-            // found in the savegame that the map has never drawn.
+            // whose blocks had gone when the map wanted them back.
             $"owed: {_exporter?.Withheld ?? 0} columns to ask the server for",
             // Only while one is running. A seed is a state a server passes through
             // rather than one it sits in, and a line saying it is not seeding is a
             // line every reader has to skip for the rest of the world's life.
             _seeding?.Describe(),
-            // Only while there is any. A map with nothing left to ask the
-            // savegame about is the ordinary state, and a line saying so is a
-            // line every reader has to skip for the rest of the world's life.
-            _exporter?.Backfilling,
         ];
 
         return TextCommandResult.Success(string.Join("\n", lines.Where(line => line is not null)));

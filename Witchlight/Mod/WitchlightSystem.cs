@@ -56,6 +56,9 @@ public partial class WitchlightSystem : ModSystem
 
     private Exporter? _exporter;
 
+    /// <summary>Which chunks have changed since the last live push. See <see cref="LiveDirty"/>.</summary>
+    private readonly LiveDirty _liveDirty = new();
+
     /// <summary>The palette as the assets gave it, before there was anywhere to
     /// put it. Read while block textures are still in memory; written once the
     /// world has said which directory its map is in.</summary>
@@ -66,6 +69,9 @@ public partial class WitchlightSystem : ModSystem
 
     /// <summary>Where live data goes, in place of a file rewritten every two seconds.</summary>
     private MapService? _service;
+
+    /// <summary>Where the map service may ask this mod for one more column.</summary>
+    private ModApi? _modApi;
 
     /// <summary>The map service, when this server is the one running it.</summary>
     private ServiceProcess? _serviceProcess;
@@ -213,13 +219,19 @@ public partial class WitchlightSystem : ModSystem
         api.Event.ChunkDirty += (coord, chunk, reason) =>
             Doing("noting a changed chunk", () => _exporter?.Mark(coord.X, coord.Z, reason));
 
+        // The same signal, read a second time for a different reader: the export
+        // above batches for whole seconds because writing to disk costs time the
+        // fast path below does not pay. This one only says where to look — the map
+        // service pulls the column itself over `ModApi` once told — so it can be
+        // sent far sooner than a write to disk would allow.
+        api.Event.ChunkDirty += (coord, chunk, reason) =>
+            Doing("noting a changed chunk for the live push", () => _liveDirty.Mark(coord.X, coord.Z, reason));
+
         api.Event.GameWorldSave += () => Doing("exporting on save", () => Export("world save"));
         api.Event.GameWorldSave += () => Doing("storing marker visibility", StoreVisibility);
         api.Event.GameWorldSave += () => Doing("storing marker pins", StorePins);
         api.Event.GameWorldSave += () =>
             Doing("storing the blocks markers were made on", StoreOrigins);
-        api.Event.GameWorldSave += () =>
-            Doing("storing visited chunks", () => _exporter?.KeepVisited());
 
         // Everything that needs a world rather than a mod: where the world counts
         // from, who may see which marker, and the service that serves them.
@@ -243,6 +255,9 @@ public partial class WitchlightSystem : ModSystem
             _visibility = Visibility.Read(api);
             _pins = Pins.Read(api);
             _origins = Origins.Read(api);
+            _modApi = new ModApi(
+                api, api.Logger, Settings.Exports, id => _palettes?.Shows(id) ?? true, Microblocks.In(api.World));
+            _modApi.Start();
             StartService();
             BeginSeeding(api);
         }));
@@ -311,7 +326,25 @@ public partial class WitchlightSystem : ModSystem
         // to find out whether it worked.
         api.Event.RegisterGameTickListener(
             Every("collecting what the map asked for", CollectAsks), LiveIntervalMs);
+
+        // Faster than everything else here on purpose: this is what lets the map
+        // service learn of a changed chunk as somebody nears it rather than
+        // whenever the next export happens to write it to disk. Sending a
+        // coordinate costs nothing worth pacing further, unlike the export this
+        // rides ahead of, which costs a disk write per region touched.
+        api.Event.RegisterGameTickListener(Every("posting changed chunks", () =>
+        {
+            if (_liveDirty.Take() is { } changed)
+            {
+                _service?.Dirty(LiveDirtyFeed.Json(changed));
+            }
+        }), LiveDirtyIntervalMs);
     }
+
+    /// <summary>How often changed chunks are pushed. A quarter of a second: fast
+    ///  enough that a player walking into new ground sees it drawn by the time
+    ///  they arrive, and still far above the cost of sending a few coordinates.</summary>
+    private const int LiveDirtyIntervalMs = 250;
 
     /// <summary>
     /// Starts filling a fresh map, a few columns at a time.
@@ -591,6 +624,8 @@ public partial class WitchlightSystem : ModSystem
     {
         _service?.Dispose();
         _service = null;
+        _modApi?.Dispose();
+        _modApi = null;
         _serviceProcess?.Dispose();
         _serviceProcess = null;
     }

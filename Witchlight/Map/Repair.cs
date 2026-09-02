@@ -24,12 +24,16 @@ namespace Witchlight;
 /// So a column is read when the game says it has arrived rather than on the next
 /// beat, which is a second later instead of ten.
 ///
-/// It is also how the map grows into ground nobody has walked back over: the
-/// columns <see cref="Backfill"/> finds in the savegame arrive here, because
-/// "get this column from the server and write it" is one job whoever wanted it.
+/// This used to be how the map grew into ground nobody had walked back over as
+/// well: a savegame-wide backfill fed it columns to fetch and write. That
+/// decision now lives in the map service, over the channel `ModApi` answers —
+/// see `ModApi.cs` and the service's own `pull.rs` — because deciding what
+/// ground the map does not have yet needs the whole map in hand to answer well,
+/// and the service already holds it. What is left here is narrower: healing a
+/// column the map already had and lost, nothing about ground it never drew.
 ///
-/// Most of what this was built to fix turned out not to be this. The holes in the
-/// middle of a map were columns whose blocks had never left memory at all: a
+/// Most of what this was built to fix turned out not to be that either. The
+/// holes in the middle of a map were columns whose blocks had never left memory at all: a
 /// sentinel in the rain heightmap made the export believe they had, permanently —
 /// see <see cref="ColumnPump"/>. What is left here is the real, ordinary case a
 /// column can still fall into, which is small and slow-moving, and the export line

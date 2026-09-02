@@ -117,6 +117,33 @@ public readonly record struct Moves(int Positions, int Blocks, int Heights, int 
 public static class ColumnPump
 {
     /// <summary>
+    /// One chunk's surface, read straight from the world, or null where it
+    /// cannot be read right now.
+    ///
+    /// What <see cref="Gather"/> does for a batch about to be written to disk,
+    /// done for one column an asker wants an answer about immediately: the same
+    /// two questions — is a map chunk here, are its blocks here — asked with
+    /// nothing gathered around them and nothing written afterward. Used by a
+    /// terrain pull that wants this column's record and does not care whether
+    /// the map already has one stored, only whether the world can answer for it
+    /// right now.
+    /// </summary>
+    public static byte[]? ReadOne(
+        ICoreServerAPI api, int chunkX, int chunkZ, System.Func<int, bool> shows, Microblocks chiselled)
+    {
+        var edge = api.WorldManager.ChunkSize;
+        var mapChunk = api.WorldManager.GetMapChunk(chunkX, chunkZ);
+        if (mapChunk?.RainHeightMap is null || !Readable(api, chunkX, chunkZ, edge, mapChunk))
+        {
+            return null;
+        }
+
+        var surface = new Surface(edge * edge);
+        Read(api, chunkX, chunkZ, edge, mapChunk, surface, shows, chiselled);
+        return surface.Record();
+    }
+
+    /// <summary>
     /// Where a chunk sits in the year, as the game reckons it, rounded to the
     /// month. Position matters: the hemispheres are in opposite seasons.
     ///

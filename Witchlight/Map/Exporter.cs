@@ -39,27 +39,6 @@ public sealed class Exporter
     /// </summary>
     private readonly Repair _repair;
 
-    /// <summary>
-    /// The ground the savegame holds that the map has never drawn.
-    ///
-    /// Walks outward from what the map has, asks the game whether the save holds
-    /// each column beside it, and hands the ones it does to the repair — which
-    /// already knows how to fetch a column and write it. See <see cref="Backfill"/>
-    /// for why this asks the game rather than reading the savegame itself.
-    /// </summary>
-    private readonly Backfill _backfill;
-
-    /// <summary>
-    /// Which columns a player has actually stood in, kept across a restart.
-    ///
-    /// What the backfill's first frontier is drawn from instead of the map's own
-    /// edge: the edge of everything already drawn includes the generator's own
-    /// margin around spawn, ground nobody walked to, and seeding from that walks
-    /// outward from spawn in every direction whether or not anybody went that way.
-    /// This is only ground a player was actually standing in.
-    /// </summary>
-    private readonly VisitedChunks _visited;
-
     /// <summary>Where the year had reached for each column when it was last written.</summary>
     private readonly Dictionary<(int, int), byte> _seasons;
 
@@ -103,8 +82,6 @@ public sealed class Exporter
             _dirty.MarkAll(columns);
             Write("repair", force: false);
         });
-        _backfill = new Backfill(api, column => _repair.Owe(new[] { column }));
-        _visited = VisitedChunks.Read(api);
 
         // What a previous run left on disk. Columns already there are not re-read
         // merely for being loaded again, and the seasons stored beside them say
@@ -133,20 +110,6 @@ public sealed class Exporter
         // server, so their one chance to be noticed has already gone by.
         _dirty.MarkUnexported(LoadedColumns(api));
 
-        // The frontier's first priority is wherever a player has actually stood
-        // before, carried across the restart in `_visited` — never the map's own
-        // edge, which includes ground the generator laid down and nobody walked
-        // to. A world with no visits recorded yet (a fresh world, or one that
-        // predates this) offers nothing here and fills in only as players move —
-        // see `Fetch`, which re-seeds on the fast clock as they do.
-        _backfill.Seed(_visited.All, _seasons.Keys);
-
-        // Last, the map's own edge — the slow, background source. It fills in a
-        // world evenly with no notion of where anybody is standing, so it is
-        // offered after the player-anchored seed above and drains behind it in
-        // the same shared queue.
-        _backfill.Beside(_seasons.Keys, _seasons.Keys);
-
         _repair.Owe(survey.Gaps);
         if (survey.Gaps.Count > 0)
         {
@@ -162,9 +125,6 @@ public sealed class Exporter
 
     /// <summary>How many columns the map wants and cannot read yet.</summary>
     public int Withheld => _repair.Owed;
-
-    /// <summary>What the savegame is still to be asked about, or nothing.</summary>
-    public string? Backfilling => _backfill.Describe();
 
     /// <summary>How many chunks the map holds.</summary>
     public int Mapped => _seasons.Count;
@@ -207,15 +167,13 @@ public sealed class Exporter
         // `Fetch`, which runs on a clock of its own.
         if (force)
         {
-            _backfill.Step(Backfill.PerCommand);
             _repair.Ask(Repair.PerCommand);
         }
         return Write(reason, force);
     }
 
     /// <summary>
-    /// Asks the server for a few of the columns the map wants, and the savegame
-    /// about a few it may want next.
+    /// Asks the server for a few of the columns the map wants back.
     ///
     /// On a clock of its own rather than on the export beat, because getting a
     /// column back and writing what it says are different jobs at different
@@ -224,45 +182,12 @@ public sealed class Exporter
     /// waited out a beat sized for writing rather than for loading, which took a
     /// map that fills in seven minutes and made it sixty-five.
     ///
-    /// The frontier is walked first and a little faster, so the repair always has
-    /// something to ask for rather than running dry between steps.
+    /// Deciding what ground the map does not have yet and asking for it lives in
+    /// the map service now, over the channel <c>ModApi</c> answers — this only
+    /// still owes the map columns it once held and lost, which is a narrower and
+    /// unrelated question. See `ModApi.cs` and the service's own `pull.rs`.
     /// </summary>
-    public void Fetch()
-    {
-        // Wherever a player is standing right now goes to the front of the
-        // frontier, ahead of the map's own background edge — a player who joins
-        // while the map is still filling in starts drawing their own surroundings
-        // immediately rather than waiting for a fill that may have started at the
-        // opposite side of the world. Recorded into `_visited` in the same breath,
-        // so a restart's first frontier is drawn from everywhere a player has ever
-        // stood rather than from the map's edge alone.
-        var standing = OnlinePlayerColumns(_api).ToList();
-        _backfill.Seed(standing, _seasons.Keys);
-        _visited.Visit(standing);
-
-        _backfill.Step(Backfill.PerStep);
-        _repair.Ask(Repair.PerStep);
-    }
-
-    /// <summary>Stores what has been visited, when it is not what is already
-    ///  stored. Rides the same save as the markers, for the same reason they do:
-    ///  a fact this mod alone keeps belongs beside the world it describes.</summary>
-    public void KeepVisited() => _visited.Write(_api);
-
-    /// <summary>The chunk column each online player is standing in, right now.</summary>
-    private static IEnumerable<(int, int)> OnlinePlayerColumns(ICoreServerAPI api)
-    {
-        var edge = api.WorldManager.ChunkSize;
-        foreach (var player in api.World.AllOnlinePlayers)
-        {
-            var pos = player.Entity?.Pos;
-            if (pos is null)
-            {
-                continue;
-            }
-            yield return ((int)pos.X / edge, (int)pos.Z / edge);
-        }
-    }
+    public void Fetch() => _repair.Ask(Repair.PerStep);
 
     /// <summary>
     /// Writes the regions that have moved. Returns what happened, or null if it
@@ -377,11 +302,6 @@ public sealed class Exporter
     {
         _dirty.Exported(columns);
         _repair.Settled(columns);
-        // A column drawn for the first time is a new edge of the map, and what
-        // lies beside it is ground the savegame may hold and the map has never
-        // seen. Offered here because this is where a column becomes something the
-        // map has.
-        _backfill.Beside(columns, _seasons.Keys);
     }
 
     /// <summary>What the status command says about the terrain on disk.</summary>

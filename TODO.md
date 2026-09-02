@@ -41,3 +41,27 @@ rather than a new mechanism — what is missing is somewhere to keep who is in o
 and a way for a player to say so without leaving the game.
 
 Sending owner uids to clients that have no use for them belongs in the same pass.
+
+## New terrain does not reach the browser for close to thirty seconds
+
+Watching a browser tab load a fresh server: tiles arrive once or twice right after
+the page opens, then nothing for roughly thirty seconds, then tiles start arriving
+steadily. Not yet root-caused — a few stages sit between a column landing and a
+browser painting it, each adding its own delay, and which one dominates has not
+been measured:
+
+- the terrain puller's own step rate (`PER_STEP` columns every `STEP_EVERY`,
+  `src/pull.rs` in the map service) — a column not yet loaded costs a `/load`
+  round trip and a wait for the next step before it can be re-asked for;
+- `BUILD_EVERY` (two seconds, hardcoded, `src/watch.rs` in the map service) —
+  rebuilds the zoom levels above the finest one on its own clock, independent of
+  when a tile actually changed;
+- the browser's own poll (`beat(pollWorld, 2000, ...)`, `src/viewer/poll.js`) —
+  asks every two seconds regardless, so a generation that has not changed yet is
+  simply not seen until it does.
+
+None of these alone accounts for thirty seconds; something about how they
+interact, or something else entirely (the mod's own export/backfill pacing before
+a column is even available to pull), is the more likely cause. Wants instrumented
+timing — see the instrumentation item already planned for the terrain-pull work —
+before guessing further.
