@@ -39,6 +39,16 @@ public sealed class Backfill
     private readonly Action<(int, int)> _owe;
 
     /// <summary>
+    /// Columns beside a player, waiting to be asked about.
+    ///
+    /// Drained before <see cref="_asking"/>, and it is the only reason there are
+    /// two queues rather than one: a column offered here is worth asking about
+    /// before anything the slow background edge has queued, however long that
+    /// queue already is, because it is where somebody is standing right now.
+    /// </summary>
+    private readonly Queue<(int, int)> _near = new();
+
+    /// <summary>
     /// Columns beside something the map holds, waiting to be asked about.
     ///
     /// A queue because the order is the order they were found in, which is
@@ -67,7 +77,7 @@ public sealed class Backfill
     }
 
     /// <summary>How many columns are still to be asked about.</summary>
-    public int Waiting => _asking.Count;
+    public int Waiting => _near.Count + _asking.Count;
 
     /// <summary>
     /// Notes columns the map now holds, and considers what lies beside them.
@@ -80,6 +90,11 @@ public sealed class Backfill
     /// Cheap enough to call on every export. It is four lookups per column
     /// written, against the whole map walked per beat had the frontier been
     /// worked out from scratch each time.
+    ///
+    /// This is the map's own edge, which is the slow, background source: it fills
+    /// in a world evenly, with no notion of where anybody is standing. See
+    /// <see cref="Seed"/> for the fast, high-priority source a player supplies
+    /// merely by being online.
     /// </summary>
     public void Beside(IEnumerable<(int, int)> mapped, ICollection<(int, int)> held)
     {
@@ -87,13 +102,60 @@ public sealed class Backfill
         {
             foreach (var beside in new[] { (cx + 1, cz), (cx - 1, cz), (cx, cz + 1), (cx, cz - 1) })
             {
-                if (!held.Contains(beside) && _tried.Add(beside))
-                {
-                    _asking.Enqueue(beside);
-                }
+                Offer(_asking, beside, held);
             }
         }
     }
+
+    /// <summary>
+    /// Puts columns at the front of the queue: this is where a player is standing
+    /// right now, or where one is known to have stood before a restart, and the
+    /// map filling in around that is worth more than filling in anywhere else.
+    ///
+    /// Called on the same fast clock that reads player positions, with wherever
+    /// they are this tick — so a player who moves keeps the frontier moving with
+    /// them, and a player who joins mid-backfill starts drawing their own
+    /// surroundings immediately rather than waiting for a fill that started at
+    /// spawn to arrive.
+    ///
+    /// A column already asked about is not asked again — <see cref="_tried"/>
+    /// still gates it — so re-offering a player's position every tick costs
+    /// nothing once the ground around them is already known.
+    /// </summary>
+    public void Seed(IEnumerable<(int, int)> around, ICollection<(int, int)> held)
+    {
+        foreach (var (cx, cz) in around)
+        {
+            Offer(_near, (cx, cz), held);
+            foreach (var beside in new[] { (cx + 1, cz), (cx - 1, cz), (cx, cz + 1), (cx, cz - 1) })
+            {
+                Offer(_near, beside, held);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Queues one column to be asked about, unless it is already mapped, already
+    /// queued, or the queue has grown past what one server is ever asked to carry
+    /// at once.
+    ///
+    /// The cap is what stops a large, long-explored world from queueing its whole
+    /// frontier in one pass on a cold start — the frontier of a big enough map is
+    /// itself a lot of columns, and every one of them is a main-thread callback
+    /// waiting to run. A queue this size drains in well under a minute at
+    /// <see cref="PerStep"/>, so nothing here is left permanently unexplored —
+    /// it is offered again the next time something beside it is drawn.
+    /// </summary>
+    private void Offer(Queue<(int, int)> onto, (int, int) at, ICollection<(int, int)> held)
+    {
+        if (held.Contains(at) || onto.Count >= MaxQueued || !_tried.Add(at))
+        {
+            return;
+        }
+        onto.Enqueue(at);
+    }
+
+    private const int MaxQueued = 4096;
 
     /// <summary>
     /// Asks the save about the next few, and says how many were asked.
@@ -106,13 +168,17 @@ public sealed class Backfill
     /// A few at a time because there is no hurry: a map filling itself in over an
     /// evening is a map nobody had to do anything about, and a map that stalls a
     /// server to do it is worse than a map with a gap.
+    ///
+    /// Drains <see cref="_near"/> first, however long <see cref="_asking"/> has
+    /// grown: a player's own surroundings are worth asking about before anything
+    /// the background edge has queued.
     /// </summary>
     public int Step(int most)
     {
         var asked = 0;
-        while (asked < most && _asking.Count > 0)
+        while (asked < most && (_near.Count > 0 || _asking.Count > 0))
         {
-            var (cx, cz) = _asking.Dequeue();
+            var (cx, cz) = _near.Count > 0 ? _near.Dequeue() : _asking.Dequeue();
             asked++;
             _api.WorldManager.TestMapChunkExists(cx, cz, saved =>
             {
@@ -130,9 +196,9 @@ public sealed class Backfill
 
     /// <summary>What the status command says about it, or nothing once it is done.</summary>
     public string? Describe() =>
-        _asking.Count == 0 && _found == 0
+        Waiting == 0 && _found == 0
             ? null
-            : $"backfill: {_asking.Count} columns to ask the savegame about, "
+            : $"backfill: {Waiting} columns to ask the savegame about, "
                 + $"{_found} found so far that the map had never drawn";
 
     /// <summary>

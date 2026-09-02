@@ -49,6 +49,17 @@ public sealed class Exporter
     /// </summary>
     private readonly Backfill _backfill;
 
+    /// <summary>
+    /// Which columns a player has actually stood in, kept across a restart.
+    ///
+    /// What the backfill's first frontier is drawn from instead of the map's own
+    /// edge: the edge of everything already drawn includes the generator's own
+    /// margin around spawn, ground nobody walked to, and seeding from that walks
+    /// outward from spawn in every direction whether or not anybody went that way.
+    /// This is only ground a player was actually standing in.
+    /// </summary>
+    private readonly VisitedChunks _visited;
+
     /// <summary>Where the year had reached for each column when it was last written.</summary>
     private readonly Dictionary<(int, int), byte> _seasons;
 
@@ -93,6 +104,7 @@ public sealed class Exporter
             Write("repair", force: false);
         });
         _backfill = new Backfill(api, column => _repair.Owe(new[] { column }));
+        _visited = VisitedChunks.Read(api);
 
         // What a previous run left on disk. Columns already there are not re-read
         // merely for being loaded again, and the seasons stored beside them say
@@ -121,16 +133,18 @@ public sealed class Exporter
         // server, so their one chance to be noticed has already gone by.
         _dirty.MarkUnexported(LoadedColumns(api));
 
-        // Last, the chunks the map is missing from the middle of itself. Marking
-        // them is no use — nothing can read a chunk the server does not hold — so
-        // they go on the list of columns owed a read, which is where the repair
-        // looks for something to ask the server for. This is what carries a hole
-        // across a restart: the list itself is memory, and the map on disk is the
-        // only thing that still knows the hole is there.
-        // And the edges of it, which is where the ground the map has never drawn
-        // begins. Offered what the map holds so that the first frontier is the
-        // whole of its outline; every column written after this offers its own
-        // neighbours as it lands.
+        // The frontier's first priority is wherever a player has actually stood
+        // before, carried across the restart in `_visited` — never the map's own
+        // edge, which includes ground the generator laid down and nobody walked
+        // to. A world with no visits recorded yet (a fresh world, or one that
+        // predates this) offers nothing here and fills in only as players move —
+        // see `Fetch`, which re-seeds on the fast clock as they do.
+        _backfill.Seed(_visited.All, _seasons.Keys);
+
+        // Last, the map's own edge — the slow, background source. It fills in a
+        // world evenly with no notion of where anybody is standing, so it is
+        // offered after the player-anchored seed above and drains behind it in
+        // the same shared queue.
         _backfill.Beside(_seasons.Keys, _seasons.Keys);
 
         _repair.Owe(survey.Gaps);
@@ -215,8 +229,39 @@ public sealed class Exporter
     /// </summary>
     public void Fetch()
     {
+        // Wherever a player is standing right now goes to the front of the
+        // frontier, ahead of the map's own background edge — a player who joins
+        // while the map is still filling in starts drawing their own surroundings
+        // immediately rather than waiting for a fill that may have started at the
+        // opposite side of the world. Recorded into `_visited` in the same breath,
+        // so a restart's first frontier is drawn from everywhere a player has ever
+        // stood rather than from the map's edge alone.
+        var standing = OnlinePlayerColumns(_api).ToList();
+        _backfill.Seed(standing, _seasons.Keys);
+        _visited.Visit(standing);
+
         _backfill.Step(Backfill.PerStep);
         _repair.Ask(Repair.PerStep);
+    }
+
+    /// <summary>Stores what has been visited, when it is not what is already
+    ///  stored. Rides the same save as the markers, for the same reason they do:
+    ///  a fact this mod alone keeps belongs beside the world it describes.</summary>
+    public void KeepVisited() => _visited.Write(_api);
+
+    /// <summary>The chunk column each online player is standing in, right now.</summary>
+    private static IEnumerable<(int, int)> OnlinePlayerColumns(ICoreServerAPI api)
+    {
+        var edge = api.WorldManager.ChunkSize;
+        foreach (var player in api.World.AllOnlinePlayers)
+        {
+            var pos = player.Entity?.Pos;
+            if (pos is null)
+            {
+                continue;
+            }
+            yield return ((int)pos.X / edge, (int)pos.Z / edge);
+        }
     }
 
     /// <summary>

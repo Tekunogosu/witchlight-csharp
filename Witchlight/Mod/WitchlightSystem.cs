@@ -218,6 +218,8 @@ public partial class WitchlightSystem : ModSystem
         api.Event.GameWorldSave += () => Doing("storing marker pins", StorePins);
         api.Event.GameWorldSave += () =>
             Doing("storing the blocks markers were made on", StoreOrigins);
+        api.Event.GameWorldSave += () =>
+            Doing("storing visited chunks", () => _exporter?.KeepVisited());
 
         // Everything that needs a world rather than a mod: where the world counts
         // from, who may see which marker, and the service that serves them.
