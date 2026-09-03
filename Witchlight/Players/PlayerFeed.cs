@@ -16,6 +16,14 @@ public class LivePlayer
     public string Uid { get; set; } = "";
 
     /// <summary>
+    /// How far the server loads ground around this player, in chunks: their
+    /// own view distance as the server granted it, never past the server's
+    /// MaxChunkRadius. What standing here adds to their map, and how far beside
+    /// them the map service may ask the game for ground.
+    /// </summary>
+    public int ViewChunks { get; set; }
+
+    /// <summary>
     /// Which stored picture is this player's, or null where there is none.
     ///
     /// A name rather than the address of one, and worked out here rather than by
@@ -132,7 +140,20 @@ public class LivePlayers
     /// </summary>
     public Dictionary<string, List<string>> Grouped { get; set; } = new();
 
+    /// <summary>
+    /// Every group the server has, by id: what it is called and who is in it,
+    /// online or not. What the service shares a map against, so it has to name
+    /// members who are not on — a player shares with their group, not with
+    /// whoever of it happens to be logged in.
+    /// </summary>
+    public Dictionary<string, LiveGroup> Groups { get; set; } = new();
+}
 
+/// <summary>One group, as the service wants it.</summary>
+public class LiveGroup
+{
+    public string Name { get; set; } = "";
+    public List<string> Members { get; set; } = new();
 }
 
 /// <summary>
@@ -178,6 +199,7 @@ public static class PlayerFeed
         }
 
         var groups = GroupsOf(api);
+        sorted.Groups = AllGroups(api);
         foreach (var player in players)
         {
             if (player.Uid.Length == 0)
@@ -230,6 +252,49 @@ public static class PlayerFeed
             groups[uid] = held;
         }
         return groups;
+    }
+
+    /// <summary>
+    /// Every group the server has and everybody in it, read off the server's
+    /// own player data rather than off the players who are on. The game keeps
+    /// a group's online members on the group and every player's memberships on
+    /// the player, so the full membership is the second read the other way.
+    /// </summary>
+    private static Dictionary<string, LiveGroup> AllGroups(ICoreServerAPI api)
+    {
+        var all = new Dictionary<string, LiveGroup>();
+        var known = api.Groups?.PlayerGroupsById;
+        if (known is null)
+        {
+            return all;
+        }
+
+        foreach (var (id, group) in known)
+        {
+            if (group is null || !Joined(api, id))
+            {
+                continue;
+            }
+            all[id.ToString()] = new LiveGroup { Name = group.Name ?? "" };
+        }
+
+        var data = api.PlayerData?.PlayerDataByUid;
+        if (data is null)
+        {
+            return all;
+        }
+
+        foreach (var (uid, player) in data)
+        {
+            foreach (var id in player?.PlayerGroupMemberships?.Keys ?? Enumerable.Empty<int>())
+            {
+                if (all.TryGetValue(id.ToString(), out var group))
+                {
+                    group.Members.Add(uid);
+                }
+            }
+        }
+        return all;
     }
 
     /// <summary>
@@ -295,6 +360,17 @@ public static class PlayerFeed
         return found;
     }
 
+    /// <summary>
+    /// The server grants a view distance in blocks and loads whole chunks out to
+    /// it, no further than its own MaxChunkRadius.
+    /// </summary>
+    private static int ViewChunksOf(ICoreServerAPI api, IPlayer player)
+    {
+        var blocks = player.WorldData?.LastApprovedViewDistance ?? 0;
+        var chunks = (int)Math.Ceiling(blocks / (double)Math.Max(1, api.WorldManager.ChunkSize));
+        return Math.Max(0, Math.Min(chunks, api.Server.Config.MaxChunkRadius));
+    }
+
     public static List<LivePlayer> All(ICoreServerAPI api, string exports)
     {
         var players = new List<LivePlayer>();
@@ -314,6 +390,7 @@ public static class PlayerFeed
             {
                 Name = player.PlayerName ?? "",
                 Uid = player.PlayerUID ?? "",
+                ViewChunks = ViewChunksOf(api, player),
                 X = Blocks.At(position.X),
                 Y = Blocks.At(position.Y),
                 Z = Blocks.At(position.Z),

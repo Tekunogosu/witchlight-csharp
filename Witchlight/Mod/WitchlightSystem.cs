@@ -56,9 +56,6 @@ public partial class WitchlightSystem : ModSystem
 
     private Exporter? _exporter;
 
-    /// <summary>Which chunks have changed since the last live push. See <see cref="LiveDirty"/>.</summary>
-    private readonly LiveDirty _liveDirty = new();
-
     /// <summary>The palette as the assets gave it, before there was anywhere to
     /// put it. Read while block textures are still in memory; written once the
     /// world has said which directory its map is in.</summary>
@@ -219,13 +216,14 @@ public partial class WitchlightSystem : ModSystem
         api.Event.ChunkDirty += (coord, chunk, reason) =>
             Doing("noting a changed chunk", () => _exporter?.Mark(coord.X, coord.Z, reason));
 
-        // The same signal, read a second time for a different reader: the export
-        // above batches for whole seconds because writing to disk costs time the
-        // fast path below does not pay. This one only says where to look — the map
-        // service pulls the column itself over `ModApi` once told — so it can be
-        // sent far sooner than a write to disk would allow.
-        api.Event.ChunkDirty += (coord, chunk, reason) =>
-            Doing("noting a changed chunk for the live push", () => _liveDirty.Mark(coord.X, coord.Z, reason));
+        // A block a player placed or broke says exactly which column moved, so
+        // the exporter reads that one column rather than the chunk — see
+        // `Exporter.Touched`. Everything the game changes without a player is
+        // still caught by the chunk signal above.
+        api.Event.DidPlaceBlock += (player, oldBlockId, selection, stack) =>
+            Doing("noting a placed block", () => _exporter?.Touched(selection.Position));
+        api.Event.DidBreakBlock += (player, oldBlockId, selection) =>
+            Doing("noting a broken block", () => _exporter?.Touched(selection.Position));
 
         api.Event.GameWorldSave += () => Doing("exporting on save", () => Export("world save"));
         api.Event.GameWorldSave += () => Doing("storing marker visibility", StoreVisibility);
@@ -250,8 +248,10 @@ public partial class WitchlightSystem : ModSystem
             // exporter reads it through the field rather than being handed a
             // copy: a palette that arrives from a client an hour from now has to
             // correct what gets exported as well as what gets coloured.
-            _exporter = new Exporter(api, Settings.Exports, id => _palettes?.Shows(id) ?? true);
-            _exporter.KeepWorldFacts();
+            _exporter = _service is { } service
+                ? new Exporter(api, Settings.Exports, service, id => _palettes?.Shows(id) ?? true)
+                : null;
+            _exporter?.KeepWorldFacts();
             _visibility = Visibility.Read(api);
             _pins = Pins.Read(api);
             _origins = Origins.Read(api);
@@ -285,10 +285,19 @@ public partial class WitchlightSystem : ModSystem
             Every("sharing claims", () => _service?.Claims(ClaimFeed.Json(api))),
             ShareIntervalMs);
 
-        // A tick listener rather than a load event: it is guaranteed to fire, and
-        // repeating it keeps the map current without anyone typing a command.
+        // The slow lane: where the year has reached, and a whole read of whatever
+        // the fast lane answered for by patching. A tick listener rather than a
+        // load event: it is guaranteed to fire, and repeating it keeps the map
+        // current without anyone typing a command.
         api.Event.RegisterGameTickListener(
             Every("exporting", () => Export("timer")), Settings.ExportIntervalMs);
+
+        // The fast lane: what moved, to the service, within a quarter of a
+        // second. Fast enough that a player building sees the map follow their
+        // hands, and bounded on the game thread by how much it reads per beat —
+        // see `Exporter.Push`.
+        api.Event.RegisterGameTickListener(
+            Every("pushing changed chunks", () => _exporter?.Push()), PushIntervalMs);
 
         // Getting the ground back is not writing it, and the two run at their own
         // speeds. A chunk load is work for the server's chunk thread and is paced
@@ -327,24 +336,12 @@ public partial class WitchlightSystem : ModSystem
         api.Event.RegisterGameTickListener(
             Every("collecting what the map asked for", CollectAsks), LiveIntervalMs);
 
-        // Faster than everything else here on purpose: this is what lets the map
-        // service learn of a changed chunk as somebody nears it rather than
-        // whenever the next export happens to write it to disk. Sending a
-        // coordinate costs nothing worth pacing further, unlike the export this
-        // rides ahead of, which costs a disk write per region touched.
-        api.Event.RegisterGameTickListener(Every("posting changed chunks", () =>
-        {
-            if (_liveDirty.Take() is { } changed)
-            {
-                _service?.Dirty(LiveDirtyFeed.Json(changed));
-            }
-        }), LiveDirtyIntervalMs);
     }
 
     /// <summary>How often changed chunks are pushed. A quarter of a second: fast
-    ///  enough that a player walking into new ground sees it drawn by the time
-    ///  they arrive, and still far above the cost of sending a few coordinates.</summary>
-    private const int LiveDirtyIntervalMs = 250;
+    ///  enough that a player building sees the map follow, and still far above
+    ///  the cost of one small post.</summary>
+    private const int PushIntervalMs = 250;
 
     /// <summary>
     /// Starts filling a fresh map, a few columns at a time.
@@ -393,15 +390,14 @@ public partial class WitchlightSystem : ModSystem
     /// <summary>
     /// Throws away what an older build left that this one cannot use.
     ///
-    /// A map this build cannot read is discarded rather than upgraded: the format
-    /// still moves, and it rebuilds itself as players explore. A `live.json` from
-    /// before live data went over the socket is read by nothing, and leaving it
-    /// invites a reader to find it and show markers that are however old it is.
+    /// A `live.json` from before live data went over the socket is read by
+    /// nothing, and leaving it invites a reader to find it and show markers that
+    /// are however old it is. The region files an older build wrote are left
+    /// where they are: the service reads them once into its database on its
+    /// first start and never again, and deleting them is the operator's call.
     /// </summary>
     private static void ClearWhatThisBuildCannotRead(ICoreServerAPI api)
     {
-        Regions.ResetIfUnreadable(Settings.Exports, GlobalConstants.ChunkSize, api.Logger);
-
         var stale = Path.Combine(Settings.Exports, "live.json");
         if (!File.Exists(stale))
         {
@@ -636,8 +632,12 @@ public partial class WitchlightSystem : ModSystem
     /// </summary>
     private const int ShareIntervalMs = 15000;
 
-    /// <summary>How often player positions are posted.</summary>
-    private const int LiveIntervalMs = 2000;
+    /// <summary>
+    /// How often player positions are posted. A second: the service tells every
+    /// browser the moment a post lands, so this is the whole of how often a dot
+    /// moves.
+    /// </summary>
+    private const int LiveIntervalMs = 1000;
 
     /// <summary>Chunk columns each way from spawn for the initial map.</summary>
     private const int SeedRadius = 8;

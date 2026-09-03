@@ -28,16 +28,18 @@ clears the map while Witchlight is alpha — see [CHANGELOG.md](CHANGELOG.md).
 
 ## What it does
 
-Terrain and colours go to files, because they accumulate and must survive both
-programs stopping. Players and markers go over a socket, because a position is
-worthless by the time a disk has finished with it.
+Colours go to files, because they change when a mod set does and must survive
+both programs stopping. Terrain, players and markers go over a socket to the
+map service, which keeps the terrain in a database of its own: what moved
+reaches the map within a quarter of a second, and a position is worthless by
+the time a disk has finished with it.
 
 | What | Where | When |
 |---|---|---|
 | every block: id, average colour, tint maps | `palette.json` | at asset load, or when a client sends one |
 | the game's climate and season lookup images | `colormaps/*.png` | at asset load |
-| the surface of every chunk exported so far | `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s |
-| who is online, where, their health and food, and which portrait is theirs | posted to the service | every 2s |
+| the surface of every chunk whose blocks moved | posted to the service | every 250ms, when there is anything |
+| who is online, where, their health and food, which portrait is theirs, and every group with its members | posted to the service | every 1s |
 | every marker | posted to the service | every 15s, when they differ from the last post |
 | the picture each marker is drawn with | `icons/{name}.svg` | at asset load, or when a client sends them |
 | a picture of a player's seraph | `portraits/{uid in hex}.png` | on their every join, and 30s after their character last changed |
@@ -58,55 +60,34 @@ world is up it loads a 17×17 block of chunk columns around spawn, four columns 
 time and working outward in rings, so a fresh server has a map without waiting for
 anyone to walk the world and without holding up the chunk thread while it does.
 
-Exports **accumulate**. A server holds only the chunks players are near, so an
-export that replaced the file would shrink the map back to spawn every time it
-ran.
+The map **accumulates** on the service's side. A server holds only the chunks
+players are near, so what the mod sends is what moved, and the service keeps
+everything it has ever been sent.
 
-The map is a **directory of regions**, eight chunks on a side. That is 256 blocks,
-which is exactly one of the renderer's tiles, so a chunk that changes belongs to
-one file and one tile: the export writes that chunk, and the renderer reloads that
-square and redraws that tile.
+**Two lanes.** A block a player places or breaks says exactly which column
+moved, so the mod reads that one column — one walk down instead of a thousand
+and twenty-four — patches the chunk's record it holds in memory, and sends the
+chunk on the next beat. Digging underground moves no surface and sends nothing.
+Anything the game changed without a player — water, growth, a fire, a tree
+felled — marks the chunk dirty as it always did, and those are read whole, a
+bounded few per beat so that forty people building at once cost the game thread
+a slice of each tick rather than all of it. On `export_interval_ms` the year is
+checked for every chunk the map holds, and every chunk the fast lane answered
+for by patching is read whole once as the catch-all.
 
-**A chunk is stored and written on its own**, behind a directory of fixed size at
-the head of each region — see `Map/Regions.cs` for the layout. A region used to be
-one gzip stream, so writing one chunk meant repacking every chunk beside it: a
-quarter of a megabyte to record six kilobytes of change. Now a chunk's bytes are
-appended and its entry rewritten, and nothing else in the file is touched.
+What is read is compared against a checksum of what the service holds, asked
+of the service once at start, so a chunk loading again is not a change and
+mining does not reach the wire. A server where nothing has happened sends
+nothing.
 
-Payloads are appended and never overwritten, which is what makes a torn write
-survivable — a run that dies mid-append leaves a directory still pointing where it
-always pointed. Each chunk carries a CRC-32, and one whose bytes do not answer to
-it is read as a chunk the map does not hold, which the repair then fetches and
-writes again; a map damaged by a power cut heals rather than needing to be thrown
-away. A region is packed down once the bytes nothing points at outweigh the bytes
-something does.
+The season is the one thing that moves a chunk without anybody touching it, and
+it is counted **by the month**: the coarsest step the eye does not notice and
+the one the game itself counts in. Twelve small posts a year per chunk rather
+than the 255 the stored byte could express.
 
-A chunk's season lives in its directory entry, so a year turning is sixteen bytes
-per chunk rather than a repacking of the map, and the start-up survey reads
-seasons and holes without decompressing anything at all.
-
-Only what moved is read again. The server marks a chunk dirty when a block in it
-moves and when it loads one, and the export reads those columns alone — a chunk
-coming back into memory unchanged is not a change. What is read is then compared
-against what is stored, so mining, which marks a chunk dirty without altering
-anything visible from above, does not reach the file either. Only the regions
-about to be written are read back off disk; the rest of the map is never touched.
-A server where nothing has happened writes nothing.
-
-The season is the one thing that moves a region without anybody touching it: it is
-stored per chunk, so a chunk whose season changes rewrites the region holding it
-whether or not a player has ever been near. What decides how often that happens is
-how finely the season is counted — and it is counted **by the month**, which is
-the coarsest step the eye does not notice and the one the game itself counts in.
-Twelve steps a year rather than the 255 the stored byte could express, so a
-region is rewritten for the calendar about once an in-game month instead of three
-times an in-game day.
-
-**The format still moves.** Witchlight is alpha, so a map on disk that this build
-cannot read is cleared on start and rebuilt as players explore, rather than
-upgraded in place. Carrying a reader for every shape the file has ever had is a
-permanent cost for the sake of maps that are days old. It says so in the log when
-it happens.
+The map used to be a directory of region files beside the palette. The service
+reads those once into its database on the first start that finds them, and the
+files may then be deleted.
 
 `/witchlight export` ignores all of that and reads every loaded chunk again, which
 is the way back if the map and the world ever disagree.
@@ -413,11 +394,11 @@ owns just to add a section of defaults it is already following.
 
 | | |
 |---|---|
-| `status` | where exports live, which source the palette came from, its coverage and fingerprint, whether that fingerprint is stale, where the world counts from, whether the map service is up, and when terrain was last written |
+| `status` | where exports live, which source the palette came from, its coverage and fingerprint, whether that fingerprint is stale, where the world counts from, whether the map service is up, and how much terrain the map holds |
 | `service [status\|start\|stop]` | the map service this mod runs. `start` runs it whatever `autostart` says, because somebody typing the command has asked |
 | `palette [player]` | ask for a palette now, rather than waiting for the next join. An admin's replaces what is stored, which is what makes this the way to correct a map |
 | `icons [player]` | ask for every marker picture again, replacing what an admin sent |
-| `export` | write the surface of every loaded chunk immediately |
+| `export` | read the surface of every loaded chunk again and send it |
 | `login` | send yourself a link to your own page of the map. Acts on nobody but its caller, which is why it is anybody's by default |
 | `mark` | mark where you are looking, using your preset for that block. Anybody's too, and asks the caller's own client — which is the only side that knows what they are looking at |
 

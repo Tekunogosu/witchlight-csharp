@@ -92,6 +92,9 @@ public sealed class MapService : IDisposable
         /// </summary>
         public bool Claim() => Interlocked.CompareExchange(ref _sending, 1, 0) == 0;
 
+        /// <summary>Whether a post of this kind is on its way now.</summary>
+        public bool Busy => Volatile.Read(ref _sending) != 0;
+
         /// <summary>Lets the next post of this kind start.</summary>
         public void Release() => Interlocked.Exchange(ref _sending, 0);
     }
@@ -100,7 +103,7 @@ public sealed class MapService : IDisposable
     private readonly Feed _markers = new("markers", "/live/markers");
     private readonly Feed _claims = new("claims", "/live/claims");
     private readonly Feed _world = new("world", "/live/world");
-    private readonly Feed _dirty = new("dirty chunks", "/live/dirty");
+    private readonly Feed _terrain = new("terrain", "/terrain");
 
     public string PlayersHealth => HealthOf(_players);
 
@@ -110,7 +113,15 @@ public sealed class MapService : IDisposable
 
     public string WorldHealth => HealthOf(_world);
 
-    public string DirtyHealth => HealthOf(_dirty);
+    public string TerrainHealth => HealthOf(_terrain);
+
+    /// <summary>
+    /// Whether a terrain post is still on its way. The exporter asks before it
+    /// takes anything off its pile: terrain is the one feed where a post dropped
+    /// for another being in flight would be ground lost rather than a position
+    /// skipped, so nothing is taken until there is room to send it.
+    /// </summary>
+    public bool TerrainBusy => _terrain.Busy;
 
     /// <summary>What one feed last did, read from the thread that asked.</summary>
     private string HealthOf(Feed feed)
@@ -414,11 +425,23 @@ public sealed class MapService : IDisposable
     public void World(string json) => Post(_world, json);
 
     /// <summary>
-    /// Chunks that changed, on their way to the service ahead of the export that
-    /// will eventually write them to disk. Held in memory by the service only
-    /// long enough to pull each one and mark its tile stale — see `pull.rs`.
+    /// The ground: chunks whose surface moved, as records, and chunks whose
+    /// season turned. Into the service's own database and out to every browser
+    /// at once — see the service's `apiport.rs`.
+    ///
+    /// `failed` is called where the post did not land, from the thread that
+    /// found out. The exporter puts the chunks back to be sent again; a
+    /// position can be skipped but the ground cannot.
     /// </summary>
-    public void Dirty(string json) => Post(_dirty, json);
+    public void Terrain(string json, Action failed) => Post(_terrain, json, failed);
+
+    /// <summary>
+    /// What the service already holds, for an exporter that has just started:
+    /// the checksum and season of every chunk, so a chunk loading again is not
+    /// read and sent for nothing. Null where the service is not answering yet,
+    /// which is ordinary — this mod is what starts it.
+    /// </summary>
+    public Task<string?> Held() => Ask("/terrain/held", quietly: true);
 
     /// <summary>
     /// Every marker, when they are not what was sent last.
@@ -446,10 +469,11 @@ public sealed class MapService : IDisposable
         Post(_markers, json);
     }
 
-    private void Post(Feed feed, string json)
+    private void Post(Feed feed, string json, Action? failed = null)
     {
         if (!feed.Claim())
         {
+            failed?.Invoke();
             return;
         }
 
@@ -462,12 +486,14 @@ public sealed class MapService : IDisposable
             {
                 Complain(feed, $"no service yet at {ConnectionPath(_exports)}");
                 feed.Release();
+                failed?.Invoke();
                 return;
             }
 
+            var landed = false;
             try
             {
-                await Send(feed, endpoint, json).ConfigureAwait(false);
+                landed = await Send(feed, endpoint, json).ConfigureAwait(false);
             }
             catch (Exception error)
             {
@@ -481,16 +507,21 @@ public sealed class MapService : IDisposable
             {
                 feed.Release();
             }
+
+            if (!landed)
+            {
+                failed?.Invoke();
+            }
         });
     }
 
-    private async Task Send(Feed feed, Endpoint endpoint, string json)
+    private async Task<bool> Send(Feed feed, Endpoint endpoint, string json)
     {
         using var reply = await Reach(endpoint, feed.Path, json).ConfigureAwait(false);
         if (!reply.IsSuccessStatusCode)
         {
             Complain(feed, $"refused with {(int)reply.StatusCode}");
-            return;
+            return false;
         }
 
         // Recorded when it lands rather than when it is attempted, so a post
@@ -507,6 +538,7 @@ public sealed class MapService : IDisposable
         }
 
         Recovered(feed, $"reaching {endpoint.Url}, {json.Length} bytes accepted");
+        return true;
     }
 
     /// <summary>Says it landed, and says so out loud only for the first one back.</summary>

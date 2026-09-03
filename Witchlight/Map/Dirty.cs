@@ -112,6 +112,48 @@ public sealed class DirtyColumns
     }
 
     /// <summary>
+    /// Hands over up to `most` of the waiting columns and clears those. The rest
+    /// wait for the next tick: the fast lane reads a few chunks per beat so that
+    /// forty people building at once cost the game thread a bounded slice of
+    /// each tick rather than all of it.
+    /// </summary>
+    public List<(int, int)> TakeUpTo(int most)
+    {
+        lock (_gate)
+        {
+            var taken = new List<(int, int)>(System.Math.Min(most, _dirty.Count));
+            foreach (var column in _dirty)
+            {
+                if (taken.Count >= most)
+                {
+                    break;
+                }
+                taken.Add(column);
+            }
+            foreach (var column in taken)
+            {
+                _dirty.Remove(column);
+            }
+            return taken;
+        }
+    }
+
+    /// <summary>
+    /// Drops columns from the waiting pile without reading them, for a chunk
+    /// whose record was patched by a block event and needs no re-read.
+    /// </summary>
+    public void Drop(IEnumerable<(int, int)> columns)
+    {
+        lock (_gate)
+        {
+            foreach (var column in columns)
+            {
+                _dirty.Remove(column);
+            }
+        }
+    }
+
+    /// <summary>
     /// Puts columns back, for an export that failed or that found a chunk not yet
     /// ready to read.
     /// </summary>

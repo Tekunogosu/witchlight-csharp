@@ -1,124 +1,131 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Vintagestory.API.Common;
-using Vintagestory.API.Config;
+using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 
 namespace Witchlight;
 
 /// <summary>
-/// Writing the surface of the world to disk.
+/// Sending the surface of the world to the map service.
 ///
 /// The whole of the export: what has moved since last time, what to re-read, and
-/// which region files that lands in. Kept apart from the mod system because none
-/// of it is about the game's lifecycle — it is about the map — and because an
-/// export is the one thing here that runs on the server's own tick and so has to
-/// be readable enough to be sure it is cheap.
+/// the sending of it. Kept apart from the mod system because none of it is about
+/// the game's lifecycle — it is about the map — and because this runs on the
+/// server's own tick and so has to be readable enough to be sure it is cheap.
 ///
-/// Two things move a region: a column in it whose surface changed, and the year,
-/// which is stored per chunk. When neither has, nothing is read and nothing is
-/// written.
+/// Terrain used to go to disk, one region file per square, for the service to
+/// notice and read back. It goes over the service's API channel now and into
+/// the service's own database, which makes that the one place the map is kept.
+/// What this holds of the ground is a checksum per chunk — enough to tell a
+/// chunk loading again from one that changed — and, for chunks somebody is
+/// building in, the record itself, so that a block placed or broken costs one
+/// column read and a small post rather than a thousand reads.
+///
+/// Two lanes, on two clocks:
+///
+/// The fast lane runs every quarter second. A block a player places or breaks
+/// patches one column of its chunk's record in memory and the chunk goes on the
+/// next post — nothing is re-read. Chunks the server marked dirty for any other
+/// reason are re-read whole, a bounded few per beat, so that the game thread
+/// pays a slice of each tick and never all of it.
+///
+/// The slow lane runs on `export_interval_ms`. It asks where the year has
+/// reached for every chunk the map holds and sends the season of any that
+/// crossed a month, and it re-reads whole every chunk the fast lane patched
+/// rather than read, which is the catch-all for anything a block event did not
+/// describe — water, growth, a fire, a tree felled.
 /// </summary>
 public sealed class Exporter
 {
     private readonly ICoreServerAPI _api;
     private readonly string _exports;
+    private readonly MapService _service;
 
-    /// <summary>Columns whose surface has moved since the last export.</summary>
+    /// <summary>Chunks whose blocks moved and whose surface is to be read again.</summary>
     private readonly DirtyColumns _dirty = new();
 
     /// <summary>
-    /// The columns the map is owed, and the getting of them back.
-    ///
-    /// Handed a way to write the ground it recovers rather than reaching for one,
-    /// so that it knows how to ask the server for a column and nothing about what
-    /// a map is. What it hands back is read on a beat of its own, a second after
-    /// the ground lands, because the export beat is longer than an untouched
-    /// column stays in memory — see <see cref="Repair"/>.
+    /// Chunks whose blocks moved since the slow lane last looked, whether or not
+    /// the fast lane has answered for them since. The catch-all's list.
+    /// </summary>
+    private readonly DirtyColumns _touched = new();
+
+    /// <summary>
+    /// The columns the map is owed, and the getting of them back. See
+    /// <see cref="Repair"/>.
     /// </summary>
     private readonly Repair _repair;
 
-    /// <summary>Where the year had reached for each column when it was last written.</summary>
-    private readonly Dictionary<(int, int), byte> _seasons;
+    /// <summary>
+    /// What the service holds for each chunk: the checksum of the record it has
+    /// and the season it was sent with. Seeded from the service at start and
+    /// moved with every post, so a chunk loading again is known from one that
+    /// changed without a copy of the ground on this side.
+    /// </summary>
+    private readonly Dictionary<(int, int), Known> _known = new();
+
+    /// <summary>
+    /// The records of the chunks most recently read, so that a block event can
+    /// patch one column rather than re-read a thousand. Bounded, because a
+    /// record is six kilobytes and a long-running server loads every chunk in
+    /// the world sooner or later.
+    /// </summary>
+    private readonly Recent _recent = new(RecentChunks);
+
+    /// <summary>Chunks whose held record was patched by a block event and is ready to send.</summary>
+    private readonly HashSet<(int, int)> _patched = new();
+
+    /// <summary>Chunks whose season the slow lane found had turned, waiting for the next post.</summary>
+    private readonly Dictionary<(int, int), byte> _turned = new();
+
+    /// <summary>The buffer one chunk is read into. Reused: every chunk is the same size.</summary>
+    private readonly ColumnPump.Surface _surface;
+
+    /// <summary>Whether what the service holds has been asked for and answered.</summary>
+    private bool _synced;
+    private bool _syncing;
 
     /// <summary>Whether spawn has reached the map service yet.</summary>
     private bool _wroteWorldFacts;
 
-    /// <summary>
-    /// Whether a block puts anything where it stands, which is what makes it the
-    /// top of a column rather than something to walk past.
-    ///
-    /// Asked of the palette rather than worked out here, and asked each time
-    /// rather than copied, so a better palette from a client corrects what gets
-    /// exported from the next beat onward — see <see cref="PaletteExchange.Shows"/>.
-    /// </summary>
     private readonly System.Func<int, bool> _shows;
-
-    /// <summary>
-    /// The chiselled blocks, whose colour is the colour of what they were cut
-    /// from rather than anything the block itself has.
-    ///
-    /// Read off the block list once. Which ids those are is fixed for the life of
-    /// a world — it is decided when the mods finish loading, and this is built
-    /// after that — so it is asked once rather than on every column of every
-    /// export.
-    /// </summary>
     private readonly Microblocks _chiselled;
 
-    public Exporter(ICoreServerAPI api, string exports, System.Func<int, bool> shows)
+    private readonly record struct Known(uint Crc, byte Season);
+
+    public Exporter(ICoreServerAPI api, string exports, MapService service, System.Func<int, bool> shows)
     {
         _api = api;
         _exports = exports;
+        _service = service;
         _shows = shows;
         _chiselled = Microblocks.In(api.World);
+        var edge = api.WorldManager.ChunkSize;
+        _surface = new ColumnPump.Surface(edge * edge);
+
         // What a recovered column is for: it was asked for so that it could be
-        // written, and writing it is this class's. Marked as well as written,
-        // because a column the server already held raises no ChunkDirty when it
-        // is asked for again — the callback is the only thing that says it is
-        // there, so it is also the thing that says it is wanted.
-        _repair = new Repair(api, columns =>
-        {
-            _dirty.MarkAll(columns);
-            Write("repair", force: false);
-        });
+        // sent, and sending is this class's. Marked as well, because a column the
+        // server already held raises no ChunkDirty when it is asked for again —
+        // the callback is the only thing that says it is there.
+        _repair = new Repair(api, columns => _dirty.MarkAll(columns));
 
-        // What a previous run left on disk. Columns already there are not re-read
-        // merely for being loaded again, and the seasons stored beside them say
-        // whether the year has moved since.
-        var survey = Regions.Walk(Regions.DirectoryIn(exports), GlobalConstants.ChunkSize);
-        _seasons = survey.Seasons;
-
-        // Except the ones stored with a hole in them. A column recorded as air is
-        // a reading that failed, not a fact about the world, and the map paints it
-        // as ground nobody has ever explored — so it is worth the one re-read that
-        // replaces it with what is actually down there. Left out of what counts as
-        // exported, which is the existing way of saying "read this again when it
-        // is next in memory": loaded now, and it is marked below; loaded later,
-        // and the server's own ChunkDirty says so.
-        _dirty.Seed(_seasons.Keys.Where(column => !survey.Holed.Contains(column)));
-        if (survey.Holed.Count > 0)
-        {
-            api.Logger.Notification(
-                "[witchlight] {0} chunk(s) on disk hold a column stored as air — they will be "
-                + "read again as they load",
-                survey.Holed.Count);
-        }
-
-        // And what the server loaded before this existed to hear about it, which
-        // is the square of chunks around spawn. Those are held for the life of the
+        // What the server loaded before this existed to hear about it, which is
+        // the square of chunks around spawn. Those are held for the life of the
         // server, so their one chance to be noticed has already gone by.
         _dirty.MarkUnexported(LoadedColumns(api));
-
-        _repair.Owe(survey.Gaps);
-        if (survey.Gaps.Count > 0)
-        {
-            api.Logger.Notification(
-                "[witchlight] {0} chunk(s) are missing from the middle of the map — "
-                + "the server will be asked for them",
-                survey.Gaps.Count);
-        }
     }
+
+    /// <summary>How many chunks the fast lane may re-read whole in one beat.</summary>
+    private const int ReadsPerBeat = 8;
+
+    /// <summary>How many chunks' records are held for patching. Twelve megabytes at most.</summary>
+    private const int RecentChunks = 2048;
 
     /// <summary>How many columns are waiting to be re-read.</summary>
     public int Waiting => _dirty.Count;
@@ -126,12 +133,53 @@ public sealed class Exporter
     /// <summary>How many columns the map wants and cannot read yet.</summary>
     public int Withheld => _repair.Owed;
 
-    /// <summary>How many chunks the map holds.</summary>
-    public int Mapped => _seasons.Count;
+    /// <summary>How many chunks the map holds, as far as this side knows.</summary>
+    public int Mapped => _known.Count;
 
     /// <summary>Notes a chunk the server has marked dirty.</summary>
-    public void Mark(int chunkX, int chunkZ, EnumChunkDirtyReason reason) =>
+    public void Mark(int chunkX, int chunkZ, EnumChunkDirtyReason reason)
+    {
         _dirty.Mark(chunkX, chunkZ, reason);
+        _touched.Mark(chunkX, chunkZ, reason);
+    }
+
+    /// <summary>
+    /// Notes a block a player placed or broke. Where the chunk's record is held,
+    /// one column is read again and the record patched; otherwise the chunk is
+    /// marked for a whole read like any other change.
+    ///
+    /// Main thread only: the game raises these there, and so is everything this
+    /// touches.
+    /// </summary>
+    public void Touched(BlockPos at)
+    {
+        var edge = _api.WorldManager.ChunkSize;
+        var chunk = ColumnPump.ChunkOf(at.X, at.Z, edge);
+
+        if (!_recent.TryGet(chunk, out var record))
+        {
+            _dirty.Mark(chunk.X, chunk.Z, EnumChunkDirtyReason.MarkedDirty);
+            return;
+        }
+
+        var entry = ColumnPump.ReadColumn(_api, at.X, at.Z, _shows, _chiselled);
+        if (entry is null)
+        {
+            _dirty.Mark(chunk.X, chunk.Z, EnumChunkDirtyReason.MarkedDirty);
+            return;
+        }
+
+        var offset = ColumnPump.OffsetOf(at.X, at.Z, edge);
+        if (record.AsSpan(offset, Regions.EntryBytes).SequenceEqual(entry))
+        {
+            // Underground, almost always: the surface did not move, and there is
+            // nothing to send. This is what keeps mining off the wire.
+            return;
+        }
+
+        entry.CopyTo(record, offset);
+        _patched.Add(chunk);
+    }
 
     /// <summary>
     /// Makes sure where the world counts from has reached the map service, and
@@ -149,197 +197,257 @@ public sealed class Exporter
     }
 
     /// <summary>
-    /// One beat of the map: ask the server for some of the ground the map is
-    /// owed, and write whatever has moved.
+    /// The fast lane: one beat, on the game thread.
     ///
-    /// Two acts rather than one, and the asking comes first — before anything is
-    /// marked, because a forced export marks every loaded map chunk and the
-    /// columns owed a read are exactly the ones a map chunk alone cannot answer
-    /// for. What comes back is not written by this export: it arrives seconds
-    /// later and is written by a beat of its own, which is the whole of why the
-    /// repair works at all. See <see cref="Repair"/>.
+    /// Everything that has to reach the service now — patched chunks, a few
+    /// re-read chunks, seasons that turned — in one post. Nothing is taken from
+    /// the pile while a post is still on its way: the service takes one post of
+    /// this kind at a time, and a beat that arrives while one is in flight
+    /// leaves everything where it is for the next.
     /// </summary>
-    public string? Export(string reason, bool force = false)
+    public void Push()
     {
-        // An operator asking for an export is asking for the map to catch up, so
-        // the command reaches for a few hundred columns at once where the beat
-        // reaches for a handful. The ordinary asking is not here at all — see
-        // `Fetch`, which runs on a clock of its own.
-        if (force)
+        if (!_synced)
         {
-            _repair.Ask(Repair.PerCommand);
+            Sync();
         }
-        return Write(reason, force);
+
+        if (_service.TerrainBusy)
+        {
+            return;
+        }
+
+        var edge = _api.WorldManager.ChunkSize;
+        var entries = new List<Entry>();
+        var sent = new List<(int, int)>();
+
+        // Patched first: these cost nothing to read and are exactly what a
+        // player is standing over.
+        foreach (var chunk in _patched)
+        {
+            if (_recent.TryGet(chunk, out var record))
+            {
+                entries.Add(Entry.Of(chunk, record, SeasonOf(chunk, edge)));
+                sent.Add(chunk);
+            }
+        }
+        _dirty.Drop(_patched);
+        _patched.Clear();
+
+        // Then a bounded few re-read whole.
+        var wanted = _dirty.TakeUpTo(ReadsPerBeat);
+        var unloaded = new List<(int, int)>();
+        foreach (var chunk in wanted)
+        {
+            switch (ColumnPump.TryRead(_api, chunk.Item1, chunk.Item2, _shows, _chiselled, _surface, out var record))
+            {
+                case Readiness.Unready:
+                    // Loaded but not finished. It will be, so it waits.
+                    _dirty.Restore(new[] { chunk });
+                    continue;
+                case Readiness.Unloaded:
+                    unloaded.Add(chunk);
+                    continue;
+            }
+
+            _recent.Keep(chunk, record!);
+            _touched.Drop(new[] { chunk });
+
+            if (_known.TryGetValue(chunk, out var known) && known.Crc == Crc32.Of(record!))
+            {
+                // Any block moving marks a chunk dirty and most of those are
+                // underground, where the surface does not move. Comparing here
+                // is what keeps mining off the wire.
+                Settled(new[] { chunk });
+                continue;
+            }
+
+            entries.Add(Entry.Of(chunk, record!, SeasonOf(chunk, edge)));
+            sent.Add(chunk);
+        }
+
+        // A chunk that cannot be read at all is forgotten here and put on the
+        // list of what the server has to be asked for.
+        _dirty.Forget(unloaded);
+        _repair.Owe(unloaded);
+
+        foreach (var (chunk, season) in _turned)
+        {
+            entries.Add(Entry.Season(chunk, season));
+        }
+        var turned = new Dictionary<(int, int), byte>(_turned);
+        _turned.Clear();
+
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        // Recorded as sent now rather than when the post lands: the next beat
+        // reads this to know whether a chunk has changed, and a post that fails
+        // puts everything back — see `Restore` below.
+        foreach (var entry in entries)
+        {
+            if (entry.Record is not null)
+            {
+                _known[entry.Chunk] = new Known(Crc32.Of(entry.Record), entry.SeasonByte);
+            }
+            else if (_known.TryGetValue(entry.Chunk, out var known))
+            {
+                _known[entry.Chunk] = known with { Season = entry.SeasonByte };
+            }
+        }
+        Settled(sent);
+
+        _service.Terrain(Json(edge, entries), failed: () =>
+        {
+            // Back on the game thread, because everything here lives there. The
+            // ground goes back on the pile to be read and sent again; the
+            // seasons go back to be sent again.
+            _api.Event.EnqueueMainThreadTask(() =>
+            {
+                foreach (var chunk in sent)
+                {
+                    _known.Remove(chunk);
+                }
+                _dirty.Restore(sent);
+                foreach (var (chunk, season) in turned)
+                {
+                    _turned[chunk] = season;
+                }
+            }, "witchlight-terrain-restore");
+        });
     }
 
     /// <summary>
-    /// Asks the server for a few of the columns the map wants back.
+    /// The slow lane: one beat, on the game thread.
     ///
-    /// On a clock of its own rather than on the export beat, because getting a
-    /// column back and writing what it says are different jobs at different
-    /// speeds. Tied to the export, a map rebuilding itself did so at whatever rate
-    /// an operator had chosen to write the disk at — and every column recovered
-    /// waited out a beat sized for writing rather than for loading, which took a
-    /// map that fills in seven minutes and made it sixty-five.
-    ///
-    /// Deciding what ground the map does not have yet and asking for it lives in
-    /// the map service now, over the channel <c>ModApi</c> answers — this only
-    /// still owes the map columns it once held and lost, which is a narrower and
-    /// unrelated question. See `ModApi.cs` and the service's own `pull.rs`.
+    /// Where the year has reached for every chunk the map holds, and a whole
+    /// re-read of every chunk the fast lane answered for by patching rather than
+    /// reading. Returns what happened, for the command that asks.
     /// </summary>
-    public void Fetch() => _repair.Ask(Repair.PerStep);
-
-    /// <summary>
-    /// Writes the regions that have moved. Returns what happened, or null if it
-    /// failed — the caller decides how loudly to say so.
-    ///
-    /// </summary>
-    private string? Write(string reason, bool force)
+    public string Export(string reason, bool force = false)
     {
         KeepWorldFacts();
-
-        var dir = Regions.DirectoryIn(_exports);
 
         if (force)
         {
             // What an operator typing the command expects: read everything in
             // memory again, whether or not the server thinks it moved.
             _dirty.MarkAll(LoadedColumns(_api));
+            _repair.Ask(Repair.PerCommand);
         }
+
+        // Everything the server marked dirty since last time that the fast lane
+        // did not read whole: read whole now, in case the change was one no
+        // block event described.
+        var catchAll = _touched.Take();
+        _dirty.Restore(catchAll);
 
         var edge = _api.WorldManager.ChunkSize;
-        var seasonsNow = ColumnPump.Seasons(_api, _seasons.Keys, edge);
-        var aged = ColumnPump.SeasonsMoved(_seasons, seasonsNow);
-
-        if (_dirty.Count == 0 && aged.Count == 0)
+        var seasonsNow = ColumnPump.Seasons(_api, _known.Keys, edge);
+        var aged = 0;
+        foreach (var (chunk, season) in seasonsNow)
         {
-            return $"nothing has moved since the last export, on {reason}{Owing()}";
+            if (_known[chunk].Season != season)
+            {
+                _turned[chunk] = season;
+                aged++;
+            }
         }
 
-        var wanted = _dirty.Take();
-
-        try
+        var message = $"{catchAll.Count} chunks queued for a whole read"
+            + (aged > 0 ? $", the season turned in {aged}" : "")
+            + $", {_known.Count} chunks mapped, {_dirty.Count} waiting, on {reason}{Owing()}";
+        if (force || aged > 0)
         {
-            // Timed because this runs on the server's own tick: whatever it costs
-            // is time the server is not doing anything else.
-            var clock = System.Diagnostics.Stopwatch.StartNew();
-
-            var set = ColumnPump.Gather(_api, dir, wanted, _shows, _chiselled);
-
-            // Neither of these was read, so neither counts as exported. One waits
-            // for the next export; the other cannot be read at all until the
-            // server hands its blocks back, so it is both forgotten here and put
-            // on the list of what the server has to be asked for.
-            _dirty.Restore(set.Unready);
-            _dirty.Forget(set.Unloaded);
-            _repair.Owe(set.Unloaded);
-            wanted.ExceptWith(set.Unready);
-            wanted.ExceptWith(set.Unloaded);
-
-            // One entry per chunk that has to be written, and nothing for the
-            // chunks beside it. A ground that moved carries its new surface; a
-            // year that moved carries only where it reached, which is a season in
-            // the region's directory and no repacking at all.
-            var updates = new Dictionary<(int, int), Regions.Update>();
-            foreach (var (column, season) in ColumnPump.Seasons(_api, set.Moved, edge))
-            {
-                updates[column] = new Regions.Update(season, set.Records[column]);
-            }
-            foreach (var column in aged)
-            {
-                if (!updates.ContainsKey(column))
-                {
-                    updates[column] = new Regions.Update(seasonsNow[column], null);
-                }
-            }
-
-            if (updates.Count == 0)
-            {
-                // Every dirty column looks the same from above. Underground work,
-                // almost always, and no reason to touch the map.
-                clock.Stop();
-                Wrote(wanted);
-                return $"{set.Reread} columns re-read, none changed the surface, "
-                    + $"in {clock.ElapsedMilliseconds}ms on {reason}{Missing(set)}{Owing()}";
-            }
-
-            var written = ColumnPump.Write(dir, edge, updates);
-            foreach (var (column, update) in updates)
-            {
-                _seasons[column] = update.Season;
-            }
-            clock.Stop();
-            Wrote(wanted);
-
-            var message = $"wrote {updates.Count} chunks ({written} bytes) of "
-                + $"{Regions.All(dir).Count} regions, "
-                + $"{set.Moved.Count} of {set.Reread} columns re-read changed{set.Changes.Said()}"
-                + (aged.Count > 0 ? $", season moved in {aged.Count}" : "")
-                + $", {_seasons.Count} chunks mapped, in {clock.ElapsedMilliseconds}ms on {reason}"
-                + Missing(set)
-                + Owing();
             _api.Logger.Notification("[witchlight] {0}", message);
-            return message;
         }
-        catch (System.Exception error)
-        {
-            // Nothing was written, so what was taken is still owed.
-            _dirty.Restore(wanted);
-            _api.Logger.Error("[witchlight] export failed: {0}", error);
-            return null;
-        }
+        return message;
     }
 
     /// <summary>
-    /// Records that these columns are now on disk.
-    ///
-    /// Said to both halves that care, from the one place that knows. Reaching
-    /// disk is what stops a column being re-read for merely loading again, and it
-    /// is also the one thing that settles a column the map was owed — two facts
-    /// with one cause, which is why they are not two calls at four sites.
+    /// Asks the server for a few of the columns the map wants back. On a clock of
+    /// its own — see <see cref="Repair"/>.
     /// </summary>
-    private void Wrote(IReadOnlyCollection<(int, int)> columns)
+    public void Fetch() => _repair.Ask(Repair.PerStep);
+
+    /// <summary>
+    /// Asks the service what it already holds, once, and takes that as what has
+    /// been sent.
+    ///
+    /// Until the answer lands everything is treated as never sent, which costs a
+    /// read and a post per chunk loaded in the meantime and nothing else: the
+    /// service already holds those and stores nothing for a record it already
+    /// has. What arrives is merged under what this side has since learned, since
+    /// a chunk sent a moment ago is newer than the service's answer about it.
+    /// </summary>
+    private void Sync()
+    {
+        if (_syncing)
+        {
+            return;
+        }
+        _syncing = true;
+
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            var body = await _service.Held().ConfigureAwait(false);
+            _api.Event.EnqueueMainThreadTask(() =>
+            {
+                _syncing = false;
+                if (body is null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    var read = JObject.Parse(body);
+                    var held = new List<(int, int)>();
+                    foreach (var one in read["Chunks"] as JArray ?? new JArray())
+                    {
+                        var chunk = ((int)one[0]!, (int)one[1]!);
+                        if (!_known.ContainsKey(chunk))
+                        {
+                            _known[chunk] = new Known((uint)one[2]!, (byte)one[3]!);
+                        }
+                        held.Add(chunk);
+                    }
+                    _dirty.Seed(held);
+                    _touched.Seed(held);
+                    _synced = true;
+                    _api.Logger.Notification("[witchlight] the map service holds {0} chunks", held.Count);
+                }
+                catch (Exception error)
+                {
+                    _api.Logger.Warning("[witchlight] could not read what the map holds: {0}", error.Message);
+                }
+            }, "witchlight-terrain-sync");
+        });
+    }
+
+    /// <summary>
+    /// Records that these columns have reached the service. Reaching it is what
+    /// stops a column being re-read for merely loading again, and what settles a
+    /// column the map was owed — two facts with one cause.
+    /// </summary>
+    private void Settled(IReadOnlyCollection<(int, int)> columns)
     {
         _dirty.Exported(columns);
+        _touched.Exported(columns);
         _repair.Settled(columns);
     }
 
-    /// <summary>What the status command says about the terrain on disk.</summary>
-    public string Describe()
-    {
-        var regions = Regions.All(Regions.DirectoryIn(_exports));
-        if (regions.Count == 0)
-        {
-            return "terrain: nothing exported yet";
-        }
+    /// <summary>The season a chunk is sent with: the one the year says, freshly.</summary>
+    private byte SeasonOf((int, int) chunk, int edge) =>
+        ColumnPump.Seasons(_api, new[] { chunk }, edge)[chunk];
 
-        var stored = regions.Values.Sum(Length);
-        var newest = regions.Values.Select(path => new FileInfo(path).LastWriteTime).Max();
-        return $"terrain: {regions.Count} regions, {stored / 1024} KiB, "
-            + $"newest written {newest:HH:mm:ss}, {_chiselled.Kinds} chiselled block(s) resolved "
-            + "to their material";
-    }
-
-    private static long Length(string path)
-    {
-        var file = new FileInfo(path);
-        return file.Exists ? file.Length : 0;
-    }
-
-    /// <summary>
-    /// What an export says about the columns it wanted and could not read.
-    ///
-    /// Which of the two it was, rather than one word for both. A column with no
-    /// map chunk is a load the server never did; one with a map chunk and no
-    /// blocks under it is a load it did and then undid. The two want different
-    /// fixes, and for a while this line said "no longer loaded" to both — which
-    /// sent the reading of it the wrong way for a whole session.
-    /// </summary>
-    private static string Missing(ColumnSet set) =>
-        set.Unloaded.Count == 0
-            ? ""
-            : $", {set.Unloaded.Count} not there to read ({set.Absent} with no map chunk, "
-                + $"{set.Emptied} with no blocks under it)";
+    /// <summary>What the status command says about the terrain.</summary>
+    public string Describe() =>
+        $"terrain: {_known.Count} chunks on the map, {_recent.Count} held for quick reads, "
+        + $"{_chiselled.Kinds} chiselled block(s) resolved to their material"
+        + (_synced ? "" : ", not yet told what the map holds");
 
     /// <summary>What an export says about the columns still to come, or nothing.</summary>
     private string Owing() => _repair.Owed > 0 ? $", {_repair.Owed} columns still owed" : "";
@@ -351,6 +459,100 @@ public sealed class Exporter
         {
             var pos = api.WorldManager.MapChunkPosFromChunkIndex2D(index);
             yield return (pos.X, pos.Y);
+        }
+    }
+
+    /// <summary>One chunk on the wire: ground that moved, or a season that turned.</summary>
+    private sealed record Entry((int, int) Chunk, byte[]? Record, byte SeasonByte)
+    {
+        public static Entry Of((int, int) chunk, byte[] record, byte season) =>
+            new(chunk, (byte[])record.Clone(), season);
+
+        public static Entry Season((int, int) chunk, byte season) => new(chunk, null, season);
+    }
+
+    /// <summary>
+    /// The post the service reads: the chunk edge, then one entry per chunk. A
+    /// record travels deflated and as base64, the same bytes a region file used
+    /// to hold for the chunk.
+    /// </summary>
+    private static string Json(int edge, IReadOnlyList<Entry> entries)
+    {
+        var chunks = new List<object>(entries.Count);
+        foreach (var entry in entries)
+        {
+            if (entry.Record is null)
+            {
+                chunks.Add(new { X = entry.Chunk.Item1, Z = entry.Chunk.Item2, Season = entry.SeasonByte });
+            }
+            else
+            {
+                chunks.Add(new
+                {
+                    X = entry.Chunk.Item1,
+                    Z = entry.Chunk.Item2,
+                    Season = entry.SeasonByte,
+                    Record = Convert.ToBase64String(Packed(entry.Record)),
+                });
+            }
+        }
+        return JsonConvert.SerializeObject(new { Edge = edge, Chunks = chunks });
+    }
+
+    /// <summary>A record deflated, raw, the way the service inflates one.</summary>
+    private static byte[] Packed(byte[] record)
+    {
+        using var packed = new MemoryStream();
+        using (var packing = new DeflateStream(packed, CompressionLevel.Optimal, leaveOpen: true))
+        {
+            packing.Write(record, 0, record.Length);
+        }
+        return packed.ToArray();
+    }
+
+    /// <summary>
+    /// The records most recently read, most recently used last out. A dictionary
+    /// and a list rather than a library: it is thirty lines, and the one
+    /// operation that matters — is this chunk's record here — is the dictionary's.
+    /// </summary>
+    private sealed class Recent
+    {
+        private readonly int _most;
+        private readonly Dictionary<(int, int), LinkedListNode<((int, int) Chunk, byte[] Record)>> _held = new();
+        private readonly LinkedList<((int, int) Chunk, byte[] Record)> _order = new();
+
+        public Recent(int most) => _most = most;
+
+        public int Count => _held.Count;
+
+        public bool TryGet((int, int) chunk, out byte[] record)
+        {
+            if (_held.TryGetValue(chunk, out var node))
+            {
+                _order.Remove(node);
+                _order.AddLast(node);
+                record = node.Value.Record;
+                return true;
+            }
+            record = Array.Empty<byte>();
+            return false;
+        }
+
+        public void Keep((int, int) chunk, byte[] record)
+        {
+            if (_held.TryGetValue(chunk, out var node))
+            {
+                _order.Remove(node);
+            }
+            var kept = new LinkedListNode<((int, int), byte[])>((chunk, (byte[])record.Clone()));
+            _order.AddLast(kept);
+            _held[chunk] = kept;
+
+            while (_held.Count > _most && _order.First is { } oldest)
+            {
+                _order.RemoveFirst();
+                _held.Remove(oldest.Value.Chunk);
+            }
         }
     }
 }

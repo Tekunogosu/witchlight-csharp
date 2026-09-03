@@ -219,6 +219,7 @@ public partial class WitchlightSystem
             $"players out: {_service?.PlayersHealth ?? "not started"}",
             $"markers out: {_service?.MarkersHealth ?? "not started"}",
             $"claims out: {_service?.ClaimsHealth ?? "not started"}",
+            $"terrain out: {_service?.TerrainHealth ?? "not started"}",
             $"waiting: {_exporter?.Waiting ?? 0} columns changed since then",
             // Named separately from the line above because it is a different kind
             // of waiting: those columns are work in hand, and these are work the

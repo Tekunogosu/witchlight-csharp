@@ -7,110 +7,20 @@ using Vintagestory.API.Server;
 namespace Witchlight;
 
 /// <summary>
-/// The regions an export is about to touch, with the columns that moved read in
-/// again.
-/// </summary>
-public sealed class ColumnSet
-{
-    /// <summary>Every chunk of every region loaded, in the format's record layout.</summary>
-    public Dictionary<(int, int), byte[]> Records { get; init; } = new();
-
-    /// <summary>Columns whose surface was read out of the world this time.</summary>
-    public int Reread { get; init; }
-
-    /// <summary>Of those, the ones whose surface differs from what was stored.</summary>
-    public IReadOnlyCollection<(int, int)> Moved { get; init; } = new List<(int, int)>();
-
-    /// <summary>
-    /// Columns wanted but not there to read. Nothing can be read for them now, so
-    /// they go to <see cref="Repair"/>, which asks the server for them.
-    /// </summary>
-    public IReadOnlyCollection<(int, int)> Unloaded { get; init; } = new List<(int, int)>();
-
-    /// <summary>
-    /// What moved in the columns that moved, in positions rather than in columns.
-    ///
-    /// A column counts as changed the moment one of its 1024 positions differs,
-    /// so the count of changed columns says how much of the map was rewritten and
-    /// nothing at all about why. These say why: a handful of positions with a new
-    /// block on them is somebody building, and a thousand positions whose climate
-    /// moved is a field this map has no business re-reading drifting under it.
-    /// Only columns already on disk are counted — a column being written for the
-    /// first time differs everywhere, trivially, and would drown the rest.
-    /// </summary>
-    public Moves Changes { get; init; }
-
-    /// <summary>
-    /// How many of those the server holds nothing at all for, against how many it
-    /// holds a map chunk for and no blocks under it.
-    ///
-    /// Two counts rather than one, because they are two different things going
-    /// wrong and only the second is the one this code was written for. A column
-    /// the map asked the server to load and that comes back with no map chunk is
-    /// a load that did not happen; one that comes back with a map chunk and no
-    /// blocks is a load that happened and was undone. They are the same word in
-    /// the log otherwise, and telling them apart is the difference between aiming
-    /// a fix and guessing at one.
-    /// </summary>
-    public int Absent { get; init; }
-    public int Emptied { get; init; }
-
-    /// <summary>
-    /// Columns in memory whose height map is not built yet. Transient, so these
-    /// stay dirty and are tried again on the next export.
-    /// </summary>
-    public IReadOnlyCollection<(int, int)> Unready { get; init; } = new List<(int, int)>();
-}
-
-/// <summary>
-/// What differed between a column as it was stored and as it reads now, counted
-/// in positions.
+/// Whether one chunk's surface could be read, and why not where it could not.
 ///
-/// Four fields go into a position and any one of them can rewrite a region, so
-/// which one it was is the difference between a map following the world and a map
-/// chasing its own tail.
+/// Three answers, because three different things are true of a column that
+/// cannot be read and each wants a different fix. Not loaded is a chunk the
+/// server holds nothing for, or holds a map chunk for and no blocks under it —
+/// both answered by asking the server for it again, see <see cref="Repair"/>.
+/// Not ready is a chunk in memory whose height map is not built yet, which is
+/// transient and answered by trying again next tick.
 /// </summary>
-public readonly record struct Moves(int Positions, int Blocks, int Heights, int Climate)
+public enum Readiness
 {
-    public static Moves operator +(Moves one, Moves two) =>
-        new(one.Positions + two.Positions,
-            one.Blocks + two.Blocks,
-            one.Heights + two.Heights,
-            one.Climate + two.Climate);
-
-    /// <summary>What an export says about it, or nothing where nothing moved.</summary>
-    public string Said() =>
-        Positions == 0
-            ? ""
-            : $" ({Positions} positions: {Blocks} blocks, {Heights} heights, {Climate} climate)";
-
-    /// <summary>
-    /// Where one stored column and the same column read again disagree.
-    ///
-    /// Walked a position at a time rather than compared as a block of bytes,
-    /// because the answer wanted is not whether they differ — the caller has
-    /// already asked that — but in what.
-    /// </summary>
-    public static Moves Between(byte[] was, byte[] now)
-    {
-        var moves = new Moves();
-        if (was.Length != now.Length)
-        {
-            return moves;
-        }
-
-        for (var at = 0; at + Regions.EntryBytes <= now.Length; at += Regions.EntryBytes)
-        {
-            var block = was[at] != now[at] || was[at + 1] != now[at + 1];
-            var height = was[at + 2] != now[at + 2] || was[at + 3] != now[at + 3];
-            var climate = was[at + 4] != now[at + 4] || was[at + 5] != now[at + 5];
-            if (block || height || climate)
-            {
-                moves += new Moves(1, block ? 1 : 0, height ? 1 : 0, climate ? 1 : 0);
-            }
-        }
-        return moves;
-    }
+    Ready,
+    Unready,
+    Unloaded,
 }
 
 /// <summary>Reads the surface out of loaded chunks.</summary>
@@ -132,15 +42,10 @@ public static class ColumnPump
         ICoreServerAPI api, int chunkX, int chunkZ, System.Func<int, bool> shows, Microblocks chiselled)
     {
         var edge = api.WorldManager.ChunkSize;
-        var mapChunk = api.WorldManager.GetMapChunk(chunkX, chunkZ);
-        if (mapChunk?.RainHeightMap is null || !Readable(api, chunkX, chunkZ, edge, mapChunk))
-        {
-            return null;
-        }
-
-        var surface = new Surface(edge * edge);
-        Read(api, chunkX, chunkZ, edge, mapChunk, surface, shows, chiselled);
-        return surface.Record();
+        return TryRead(api, chunkX, chunkZ, shows, chiselled, new Surface(edge * edge), out var record)
+            == Readiness.Ready
+            ? record
+            : null;
     }
 
     /// <summary>
@@ -254,111 +159,83 @@ public static class ColumnPump
     }
 
     /// <summary>
-    /// Re-reads the surface of the columns asked for, and says which of them
-    /// differ from what the map already holds.
+    /// One chunk's surface, with the reason where there is none to read.
     ///
-    /// Only those columns are read back off disk — not the regions holding them.
-    /// A region is two hundred and fifty-six chunks and an export usually wants
-    /// three of them, so unpacking the square to compare a corner of it was most
-    /// of what an export cost.
+    /// The three questions an export used to ask across a batch — is a map chunk
+    /// here, is its height map built, are its blocks here — asked of one chunk,
+    /// so that the fast lane can read a few per tick and say exactly what it
+    /// found for each.
     /// </summary>
-    public static ColumnSet Gather(
+    public static Readiness TryRead(
         ICoreServerAPI api,
-        string dir,
-        IReadOnlyCollection<(int, int)> wanted,
+        int chunkX,
+        int chunkZ,
         System.Func<int, bool> shows,
-        Microblocks chiselled)
+        Microblocks chiselled,
+        Surface surface,
+        out byte[]? record)
+    {
+        record = null;
+        var edge = api.WorldManager.ChunkSize;
+        var mapChunk = api.WorldManager.GetMapChunk(chunkX, chunkZ);
+        if (mapChunk is null)
+        {
+            return Readiness.Unloaded;
+        }
+
+        if (mapChunk.RainHeightMap is null)
+        {
+            return Readiness.Unready;
+        }
+
+        if (!Readable(api, chunkX, chunkZ, edge, mapChunk))
+        {
+            // The heightmap is here and the blocks are not, which reads as a
+            // chunk of air rather than as an absence. Answered the same way as a
+            // chunk that is not there at all: by asking the server for it.
+            return Readiness.Unloaded;
+        }
+
+        Read(api, chunkX, chunkZ, edge, mapChunk, surface, shows, chiselled);
+        record = surface.Record();
+        return Readiness.Ready;
+    }
+
+    /// <summary>
+    /// One column's entry — the six bytes the record holds for it — read straight
+    /// from the world, or nothing where its chunk cannot be read right now.
+    ///
+    /// What a block placed or broken costs: one column walked, against the
+    /// thousand and twenty-four a whole chunk is. The chunk's record is patched
+    /// with the answer rather than read again.
+    /// </summary>
+    public static byte[]? ReadColumn(
+        ICoreServerAPI api, int x, int z, System.Func<int, bool> shows, Microblocks chiselled)
     {
         var edge = api.WorldManager.ChunkSize;
-        var area = edge * edge;
-
-        var surface = new Surface(area);
-
-        var known = new Dictionary<(int, int), byte[]>();
-        foreach (var byRegion in Grouped(wanted))
+        var (chunkX, chunkZ) = ChunkOf(x, z, edge);
+        var mapChunk = api.WorldManager.GetMapChunk(chunkX, chunkZ);
+        if (mapChunk?.RainHeightMap is null || !Readable(api, chunkX, chunkZ, edge, mapChunk))
         {
-            var (rx, rz) = byRegion.Key;
-            foreach (var (column, stored) in
-                     Regions.Read(Regions.PathOf(dir, rx, rz), edge, byRegion.Value))
-            {
-                known[column] = stored.Record;
-            }
+            return null;
         }
 
-        var unloaded = new List<(int, int)>();
-        var absent = 0;
-        var emptied = 0;
-        var unready = new List<(int, int)>();
-        var moved = new List<(int, int)>();
-        var changes = new Moves();
-        var reread = 0;
-
-        foreach (var (cx, cz) in wanted)
-        {
-            var mapChunk = api.WorldManager.GetMapChunk(cx, cz);
-            if (mapChunk is null)
-            {
-                // Marked dirty, then unloaded before the export ran. Holding it
-                // dirty would keep the set permanently non-empty for a chunk that
-                // cannot be read, and every export would walk the map to find out.
-                unloaded.Add((cx, cz));
-                absent++;
-                continue;
-            }
-
-            if (mapChunk.RainHeightMap is null)
-            {
-                // Loaded but not finished. It will be, so it waits.
-                unready.Add((cx, cz));
-                continue;
-            }
-
-            if (!Readable(api, cx, cz, edge, mapChunk))
-            {
-                // The heightmap is here and the blocks are not, which reads as a
-                // chunk of air rather than as an absence. Held with the ones that
-                // were not there at all: both are answered by the server being
-                // asked for the column again.
-                unloaded.Add((cx, cz));
-                emptied++;
-                continue;
-            }
-
-            Read(api, cx, cz, edge, mapChunk, surface, shows, chiselled);
-            var record = surface.Record();
-            reread++;
-
-            // Any block moving marks a chunk dirty and most of those are
-            // underground, where the surface does not move. Comparing here is what
-            // keeps mining out of the map's write path.
-            if (!known.TryGetValue((cx, cz), out var stored))
-            {
-                known[(cx, cz)] = record;
-                moved.Add((cx, cz));
-            }
-            else if (!record.AsSpan().SequenceEqual(stored))
-            {
-                // Counted only here, where there is something to compare against.
-                // A column reaching disk for the first time differs everywhere and
-                // would say nothing about why any of them do.
-                changes += Moves.Between(stored, record);
-                known[(cx, cz)] = record;
-                moved.Add((cx, cz));
-            }
-        }
-
-        return new ColumnSet
-        {
-            Records = known,
-            Reread = reread,
-            Moved = moved,
-            Changes = changes,
-            Unloaded = unloaded,
-            Absent = absent,
-            Emptied = emptied,
-            Unready = unready,
-        };
+        var index = Mod(z, edge) * edge + Mod(x, edge);
+        var surface = new Surface(1);
+        ReadAt(api, mapChunk, x, z, index, 0, surface, new BlockPos(0), shows, chiselled);
+        return surface.Record();
     }
+
+    /// <summary>Where a column sits in its chunk's record, as a byte offset.</summary>
+    public static int OffsetOf(int x, int z, int edge) =>
+        (Mod(z, edge) * edge + Mod(x, edge)) * Regions.EntryBytes;
+
+    /// <summary>Which chunk a block is in. Floors, as negative coordinates need.</summary>
+    public static (int X, int Z) ChunkOf(int x, int z, int edge) => (FloorDiv(x, edge), FloorDiv(z, edge));
+
+    private static int FloorDiv(int value, int by) => (int)Math.Floor((double)value / by);
+
+    private static int Mod(int value, int by) => ((value % by) + by) % by;
 
     /// <summary>
     /// Whether the blocks are there to be read, and not only the record of where
@@ -425,58 +302,6 @@ public static class ColumnPump
     }
 
     /// <summary>
-    /// Columns filed under the region that holds them.
-    ///
-    /// Everything that reads or writes the map does so a region at a time, since
-    /// a region is a file; everything that decides what to read or write thinks in
-    /// columns. This is the one place that turns the second into the first.
-    /// </summary>
-    private static Dictionary<(int, int), List<(int, int)>> Grouped(
-        IEnumerable<(int, int)> columns)
-    {
-        var byRegion = new Dictionary<(int, int), List<(int, int)>>();
-        foreach (var column in columns)
-        {
-            var region = Regions.Of(column.Item1, column.Item2);
-            if (!byRegion.TryGetValue(region, out var held))
-            {
-                held = byRegion[region] = new List<(int, int)>();
-            }
-            held.Add(column);
-        }
-        return byRegion;
-    }
-
-    /// <summary>
-    /// Writes the changes named, and says how many bytes that took.
-    ///
-    /// Grouped by region because a region is a file, and handed to that file as
-    /// changes rather than as contents: what reaches the disk is the chunks that
-    /// moved and the entries naming them, never the two hundred and fifty-odd
-    /// chunks in the same square that did not.
-    ///
-    /// The bytes are counted and reported because they are the point. An export
-    /// that says it wrote five regions says nothing about whether that was five
-    /// kilobytes or five hundred, and the difference between those two was a
-    /// release.
-    /// </summary>
-    public static long Write(
-        string dir, int edge, IReadOnlyDictionary<(int, int), Regions.Update> updates)
-    {
-        var written = 0L;
-        foreach (var (region, columns) in Grouped(updates.Keys))
-        {
-            var held = new Dictionary<(int, int), Regions.Update>();
-            foreach (var column in columns)
-            {
-                held[column] = updates[column];
-            }
-            written += Regions.Write(dir, edge, region.Item1, region.Item2, held);
-        }
-        return written;
-    }
-
-    /// <summary>
     /// One chunk's surface, while it is being read and packed.
     ///
     /// Four parallel arrays were allocated by one method and threaded through two
@@ -486,7 +311,7 @@ public static class ColumnPump
     /// stores it. Reused across chunks, because an export walks hundreds of them
     /// and the buffer is the same size every time.
     /// </summary>
-    private sealed class Surface
+    public sealed class Surface
     {
         private readonly ushort[] _blocks;
         private readonly short[] _heights;
@@ -543,98 +368,115 @@ public static class ColumnPump
         System.Func<int, bool> shows,
         Microblocks chiselled)
     {
-        var accessor = api.World.BlockAccessor;
         var position = new BlockPos(0);
-        var ceiling = api.WorldManager.MapSizeY - 1;
-
         for (var dz = 0; dz < edge; dz++)
         {
             for (var dx = 0; dx < edge; dx++)
             {
                 var i = dz * edge + dx;
-                var worldX = chunkX * edge + dx;
-                var worldZ = chunkZ * edge + dz;
-
-                // Held inside the world, for the reason `Ceiling` is: this is
-                // where the search downward starts, and a position whose rain
-                // never stopped says 65535. Started there, the search walks sixty
-                // thousand positions of nothing before it reaches the sky, and
-                // what it stores for a column it finds nothing in is that number
-                // squeezed into a signed short — which is a surface at -1.
-                var top = Math.Min((int)mapChunk.RainHeightMap[i], ceiling);
-                var y = top;
-                var id = 0;
-
-                // The rain height map marks where rain stops, which is commonly
-                // the air just above the ground. Step down until something is
-                // actually there, rather than mapping the sky.
-                //
-                // Something that *shows*, not merely something that is not air.
-                // A large structure stands one real block beside a run of
-                // invisible placeholders, and a barrel or a door has its own; a
-                // search that stopped at the first non-air block recorded one of
-                // those and the map drew a speck of nothing in the middle of
-                // grass. What counts as showing is the palette's to say — see
-                // `PaletteExchange.Shows`.
-                //
-                // All the way down, rather than a few blocks. A dug shaft is a
-                // column of air below where the sky still says the ground is, and
-                // a search that gave up after eight of them recorded air — which
-                // the map paints as ground nobody has ever explored. So every pit
-                // a player dug deeper than eight blocks became a hole on the map
-                // that no amount of exporting would fill.
-                //
-                // The depth is paid by the columns that need it and by no others:
-                // ordinary ground answers on the first or second read, and only an
-                // open shaft costs its own depth.
-                for (; y >= 0; y--)
-                {
-                    position.Set(worldX, y, worldZ);
-                    var here = accessor.GetBlockId(position);
-                    if (here == 0)
-                    {
-                        continue;
-                    }
-
-                    // What it is made of, where what it is does not say. A
-                    // chiselled block is a shell with its material in the block
-                    // entity beside it — see `Microblocks`. Everything else
-                    // answers with itself.
-                    //
-                    // Asked before the palette is, not after. The shell's only
-                    // texture is the game's missing-texture checker, so the
-                    // palette rightly says it draws nothing; asking that first
-                    // would walk past every ruin wall in the world and record the
-                    // ground under it. What has to show is the material.
-                    var drawn = chiselled.MaterialAt(accessor, position, here, shows);
-                    if (shows(drawn))
-                    {
-                        id = drawn;
-                        break;
-                    }
-                }
-
-                if (id == 0)
-                {
-                    // Nothing anywhere beneath the sky here, which is no ordinary
-                    // column. Recorded where the sky said rather than below the
-                    // world, so the height stays a number the map can draw with.
-                    y = top;
-                }
-
-                position.Set(worldX, y, worldZ);
-
-                // A column whose climate cannot be read is drawn at the middle of
-                // both scales rather than left at whatever the last chunk put
-                // there — the buffer is reused, so nothing here may be skipped.
-                var climate = accessor.GetClimateAt(position, EnumGetClimateMode.WorldGenValues);
-                surface.Set(
-                    i,
-                    id,
-                    y,
-                    climate is null ? (byte)128 : (byte)Climate.DescaleTemperature(climate.Temperature),
-                    climate is null ? (byte)128 : (byte)Math.Clamp((int)(climate.Rainfall * 255f), 0, 255));
+                ReadAt(api, mapChunk, chunkX * edge + dx, chunkZ * edge + dz, i, i, surface, position, shows, chiselled);
             }
         }
+    }
+
+    /// <summary>
+    /// Reads what is on top of one column into one slot of a surface.
+    ///
+    /// `index` is the column's place in the chunk, which is where its rain height
+    /// is; `slot` is where the answer goes, which is the same number for a whole
+    /// chunk and zero for a surface of one.
+    /// </summary>
+    private static void ReadAt(
+        ICoreServerAPI api,
+        IMapChunk mapChunk,
+        int worldX,
+        int worldZ,
+        int index,
+        int slot,
+        Surface surface,
+        BlockPos position,
+        System.Func<int, bool> shows,
+        Microblocks chiselled)
+    {
+        var accessor = api.World.BlockAccessor;
+        var ceiling = api.WorldManager.MapSizeY - 1;
+
+        // Held inside the world, for the reason `Ceiling` is: this is where the
+        // search downward starts, and a position whose rain never stopped says
+        // 65535. Started there, the search walks sixty thousand positions of
+        // nothing before it reaches the sky, and what it stores for a column it
+        // finds nothing in is that number squeezed into a signed short — which
+        // is a surface at -1.
+        var top = Math.Min((int)mapChunk.RainHeightMap[index], ceiling);
+        var y = top;
+        var id = 0;
+
+        // The rain height map marks where rain stops, which is commonly the air
+        // just above the ground. Step down until something is actually there,
+        // rather than mapping the sky.
+        //
+        // Something that *shows*, not merely something that is not air. A large
+        // structure stands one real block beside a run of invisible placeholders,
+        // and a barrel or a door has its own; a search that stopped at the first
+        // non-air block recorded one of those and the map drew a speck of nothing
+        // in the middle of grass. What counts as showing is the palette's to say —
+        // see `PaletteExchange.Shows`.
+        //
+        // All the way down, rather than a few blocks. A dug shaft is a column of
+        // air below where the sky still says the ground is, and a search that
+        // gave up after eight of them recorded air — which the map paints as
+        // ground nobody has ever explored. So every pit a player dug deeper than
+        // eight blocks became a hole on the map that no amount of exporting would
+        // fill.
+        //
+        // The depth is paid by the columns that need it and by no others:
+        // ordinary ground answers on the first or second read, and only an open
+        // shaft costs its own depth.
+        for (; y >= 0; y--)
+        {
+            position.Set(worldX, y, worldZ);
+            var here = accessor.GetBlockId(position);
+            if (here == 0)
+            {
+                continue;
+            }
+
+            // What it is made of, where what it is does not say. A chiselled
+            // block is a shell with its material in the block entity beside it —
+            // see `Microblocks`. Everything else answers with itself.
+            //
+            // Asked before the palette is, not after. The shell's only texture is
+            // the game's missing-texture checker, so the palette rightly says it
+            // draws nothing; asking that first would walk past every ruin wall in
+            // the world and record the ground under it. What has to show is the
+            // material.
+            var drawn = chiselled.MaterialAt(accessor, position, here, shows);
+            if (shows(drawn))
+            {
+                id = drawn;
+                break;
+            }
+        }
+
+        if (id == 0)
+        {
+            // Nothing anywhere beneath the sky here, which is no ordinary column.
+            // Recorded where the sky said rather than below the world, so the
+            // height stays a number the map can draw with.
+            y = top;
+        }
+
+        position.Set(worldX, y, worldZ);
+
+        // A column whose climate cannot be read is drawn at the middle of both
+        // scales rather than left at whatever the last chunk put there — the
+        // buffer is reused, so nothing here may be skipped.
+        var climate = accessor.GetClimateAt(position, EnumGetClimateMode.WorldGenValues);
+        surface.Set(
+            slot,
+            id,
+            y,
+            climate is null ? (byte)128 : (byte)Climate.DescaleTemperature(climate.Temperature),
+            climate is null ? (byte)128 : (byte)Math.Clamp((int)(climate.Rainfall * 255f), 0, 255));
     }
 }

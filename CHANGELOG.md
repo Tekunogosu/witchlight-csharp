@@ -13,6 +13,44 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.43.0
+
+**Deploy note:** both halves, upgraded together; nothing is cleared.
+
+**Each player's view distance rides the player post** as `ViewChunks`: how
+far the server loads ground around them, in chunks, never past its own
+`MaxChunkRadius`. The map service reads it as how far standing somewhere adds
+to that player's map and how far beside them it may ask for ground, as a disc
+rather than a square. The service also asks `/exists` before `/load` now, so a
+column the savegame does not hold is never generated on the map's behalf —
+see the service's changelog for what else moved.
+
+## 0.42.0
+
+**Deploy note:** both halves, upgraded together. **The map is kept**: the
+service reads the region files once into its new database on its first start
+and says so in its log, after which `columns/` may be deleted. **Behaviour
+changes on upgrade:** `private_map` is on by default, so every player starts
+with an empty map that fills in as they move, positions are their own group's
+to see, and a browser nobody has signed in on is shown the ground around spawn
+and nothing else. Set `private_map = false` in `witchlight.conf` for a server
+of friends that wants the one shared map it always had. Four new settings are
+written into the file the next time the service writes one.
+
+**Terrain goes to the service, not to disk.** The region files are gone. A
+block a player places or breaks patches one column of a record held in memory
+and reaches the service within a quarter of a second; anything the game changed
+without a player is read whole, a few chunks per beat. Mining sends nothing. At
+start the mod asks the service what it holds — a checksum per chunk — so a chunk
+loading again is not a change. See `Map/Exporter.cs`.
+
+**Who is in which group travels with the players**, offline members included,
+so that a map shared with a group is shared with the group and not with whoever
+of it is online. Positions post every second.
+
+**`private_map`** keeps positions to each player's own group whatever
+`players_public` says.
+
 ## 0.41.1
 
 **Deploy note:** both halves, upgraded together. Nothing is cleared — a map part

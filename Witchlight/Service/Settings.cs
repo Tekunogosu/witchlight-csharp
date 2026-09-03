@@ -143,7 +143,17 @@ public static class Settings
     /// this is the half that knows what groups the game has people in, and a
     /// service holding positions it must not send is one bug from sending them.
     /// </summary>
-    public static bool PlayersPublic => On("players_public", byDefault: true);
+    public static bool PlayersPublic => On("players_public", byDefault: true) && !PrivateMap;
+
+    /// <summary>
+    /// Whether each person is shown the map as they last saw it, rather than the
+    /// map as it is. The service is the half that draws it that way; what this
+    /// half does about it is keep where a player stands to their own group,
+    /// whatever `players_public` says — a map that hides the ground somebody
+    /// built on must not show the people standing on it — and tell the service
+    /// who is in which group.
+    /// </summary>
+    public static bool PrivateMap => On("private_map", byDefault: true);
 
     /// <summary>
     /// Whether the map draws the claims the world made for itself.

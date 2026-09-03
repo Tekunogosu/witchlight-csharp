@@ -63,7 +63,8 @@ What it asks:
 
 | | | |
 |---|---|---|
-| `GET /info.json` | what the map is and whether it has changed | see below |
+| `GET /info.json` | what the map is and whether it has changed, as whoever is asking sees it | see below |
+| `GET /events?since={generation}&live={seq}` | held until the map or the live feed has moved past those, then what moved | see below |
 | `GET /live.json` | who is online and every marker this browser may see | see below |
 | `GET /me.json` | who is looking, and what they may be offered | see below |
 | `GET /icons.json` | the marker pictures that exist | JSON array of names |
@@ -125,11 +126,27 @@ A region that changes also changes the western edge of the tile east of it and
 the northern edge of the tile below, because slope shading reads the column to
 the west and the one to the north. Those neighbours are in the list already.
 
+### `GET /events?since={generation}&live={seq}`
+
+Held until the map has moved past `generation` or the live feed past `seq`, or
+for twenty-five seconds, then:
+
+```json
+{"generation":4,"liveSeq":12,"info":{"...":"..."},"live":null}
+```
+
+`info` is what `/info.json?since={generation}` would have answered, or `null`
+where the map did not move; `live` is what `/live.json` would have answered, or
+`null` where the feed did not. A page asks again the moment it is answered, so
+a change reaches it within a round trip of arriving here. Answered `503` where
+too many browsers are already waiting, which a page reads as "ask on a clock
+instead".
+
 ### `GET /live.json`
 
 ```json
-{"Players":[{"Name":"ada","Uid":"...","X":511900,"Y":110,"Z":511901,"Facing":270,
-              "Portrait":"6164...","PortraitAt":1756315231}],
+{"Players":[{"Name":"ada","Uid":"...","ViewChunks":8,"X":511900,"Y":110,"Z":511901,
+              "Facing":270,"Portrait":"6164...","PortraitAt":1756315231}],
  "Waypoints":[{"Title":"Forge","Icon":"circle","Color":"#00ff00",
                "X":511810,"Y":110,"Z":511810,"Owner":"ada",
                "OwnerUid":"...","Block":"game:anvil-copper-north",
@@ -362,7 +379,9 @@ in the service's config file (`-a` for the address), and `WITCHLIGHT_API_BIND` a
 
 | | | |
 |---|---|---|
-| `POST /live/players` | who is online, a JSON array | every 2s |
+| `POST /live/players` | who is online, sorted by who may see them, and every group with its members | every 1s |
+| `POST /terrain` | chunks whose surface moved, as deflated records, and chunks whose season turned | every 250ms, when there is anything |
+| `POST /terrain/held` | → every chunk the map holds: `[x, z, crc32, season]` each | once, when the mod starts |
 | `POST /live/markers` | every marker, sorted by who may see it | only when they differ from the last post |
 | `POST /markers/pending` | → the markers asked for on the web | every 2s |
 | `POST /auth/mint` | `{"Uid":…,"Name":…}` → `{"Token":…}` | when a player asks for a link |
@@ -450,7 +469,7 @@ the file — the format has one owner and it is the service.
 |---|---|---|
 | `palette.json` | at asset load, or when a client sends one | every block: id, average colour or which kind of colourless it is, which colour maps tint it |
 | `colormaps/*.png` | at asset load | the game's climate and season lookup images |
-| `columns/r.{x}.{z}.msqr` | the regions whose columns or season moved, checked every 30s | the surface of every chunk exported so far |
+| `map.sqlite` | **by the service**, as terrain arrives | every chunk the map holds, every version of one somebody still remembers, and what each person has seen |
 | `icons/{name}.svg` | at asset load, or when a client sends them | the picture each marker is drawn with |
 | `world.json` | once the world is ready, and on any export until it can be | where the world counts from, so coordinates match what a player reads in game |
 | `markers.json` | **by the service**, when markers arrive and differ | the last markers posted, sorted by who may see them |
@@ -459,26 +478,28 @@ the file — the format has one owner and it is the service.
 | `api.json` | **by the service**, as it binds | the port and token of the API channel, mode `0600`. Removed when the mod stops the service — a port that has been taken over by something else answers, and there is no telling what |
 | `blocknames.json` | at asset load | what the game calls each block, keyed on the same code the palette is, so that marking something can start from its name |
 | `preferences.json` | **by the service**, when somebody changes theirs | each person's marker presets and defaults, against their uid |
-| `tiles/{level}/…` | **by the service**, as regions change | every zoom level above the finest, which is drawn on demand and not stored |
+| `tiles/{level}/…` | **by the service**, as terrain arrives | every zoom level above the finest, which is drawn on demand and not stored |
 
 
 
-**The format still moves.** Witchlight is alpha, so a map on disk the mod cannot
-read — an older format, or a file it cannot parse — is deleted on start and
-rebuilt as players explore. There is no upgrade path and no backup of the old
-file, deliberately: a reader for every shape the format has ever had is permanent
-cost for maps that are days old.
+**Terrain goes over the channel, not to a file.** The mod reads the surface of
+a chunk whose blocks moved and posts it within a quarter of a second — a block a
+player placed or broke patches one column of a record the mod holds in memory,
+and anything the game did without a player is read whole, a few chunks per
+beat. The service keeps every chunk in `map.sqlite`, its own database, and is
+the one program that reads or writes it. At start the mod asks what the service
+holds, so a chunk loading again is known from one that changed without the mod
+keeping a copy of the ground.
 
 A region is 16×16 chunks, which at a chunk edge of 32 is 512 blocks — exactly one
 tile at the finest zoom level, and the same square the game itself calls a map
-region. Region file, tile and game region are one thing, which is a whole class of
-off-by-one that cannot happen. Each is a gzip stream of fixed-size records after a
-20-byte header, documented in the service's `src/columns.rs` and in the mod's
-`Map/Regions.cs`. On real exports the compression runs between five and eight times.
+region. Tile and game region are one thing, which is a whole class of off-by-one
+that cannot happen. The map used to be a file per region, `columns/r.{x}.{z}.msqr`;
+a service starting with an empty database reads those files once into it, and
+the files may then be deleted. Their layout is still documented at the head of
+the service's `src/columns.rs` for that reading.
 
-The service watches the `columns` directory's timestamp and reloads only the
-regions whose own timestamps moved, and watches `palette.json` and
-`blocknames.json` the same way.
+The service watches `palette.json` and `blocknames.json` by their timestamps.
 
 **Every file here is written beside itself and renamed into place**, whichever
 half writes it, so a reader never sees half of one — which is also what makes a

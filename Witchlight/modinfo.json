@@ -6,7 +6,7 @@
     "Theysa"
   ],
   "description": "Exports map data for the Witchlight map server, and shares players' map markers with the server when the operator asks for it.",
-  "version": "0.41.1",
+  "version": "0.43.0",
   "side": "universal",
   "requiredOnClient": false,
   "dependencies": {}
