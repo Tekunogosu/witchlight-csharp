@@ -13,6 +13,12 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.44.0
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service, which now writes its zoom levels to disk once a tile has
+stopped changing rather than on every rebuild — see its changelog.
+
 ## 0.43.0
 
 **Deploy note:** both halves, upgraded together; nothing is cleared.
