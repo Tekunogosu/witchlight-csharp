@@ -161,7 +161,10 @@ public partial class WitchlightSystem : ModSystem
             // depends on what the map service holds for that player, which is a
             // round trip and does not belong on the packet thread.
             .SetMessageHandler<MarkAsk>((player, ask) =>
-                Doing("taking a marker from a player", () => Mark(player, ask)));
+                Doing("taking a marker from a player", () => Mark(player, ask)))
+            // Somebody else's marker, pinned or changed from a player's own map.
+            .SetMessageHandler<SharedMarkerChange>((player, change) =>
+                Doing("changing a shared marker", () => ChangeShared(player, change)));
 
         // `PlayerNowPlaying` is the earliest moment a player can be sent
         // anything: their client is loaded and in the world. The map's address is
@@ -532,6 +535,31 @@ public partial class WitchlightSystem : ModSystem
                 () => Doing("marking from the game", () => Marked(player, ask, person, block)),
                 "witchlight-mark");
         });
+    }
+
+    /// <summary>
+    /// What a player asked of somebody else's marker from their in-game map.
+    ///
+    /// The asker is always sent their markers again, because the pin they asked
+    /// for is a fact about their map and the window they asked from is waiting
+    /// to see it. A marker that itself changed is everybody's to see, and the
+    /// map service's to show, the same as one changed from the web.
+    /// </summary>
+    private void ChangeShared(IServerPlayer player, SharedMarkerChange change)
+    {
+        if (_sapi is not { } api)
+        {
+            return;
+        }
+
+        var changed = SharedServer.Apply(api, player, change, _visibility, _pins);
+        if (changed)
+        {
+            SharedServer.SendToAll(api, _visibility, _pins);
+            _service?.Markers(MarkerFeed.Json(api, _visibility, _pins, _origins));
+            return;
+        }
+        SharedServer.SendTo(api, player, _visibility, _pins);
     }
 
     /// <summary>

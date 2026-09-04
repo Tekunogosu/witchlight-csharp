@@ -233,16 +233,16 @@ public static class PlayerFeed
     private static Dictionary<string, HashSet<int>> GroupsOf(ICoreServerAPI api)
     {
         var groups = new Dictionary<string, HashSet<int>>();
-        foreach (var player in api.World.AllOnlinePlayers)
+        foreach (var player in Playing(api))
         {
-            var uid = player?.PlayerUID;
+            var uid = player.PlayerUID;
             if (string.IsNullOrEmpty(uid))
             {
                 continue;
             }
 
             var held = new HashSet<int>();
-            foreach (var membership in player!.Groups ?? Array.Empty<PlayerGroupMembership>())
+            foreach (var membership in player.Groups ?? Array.Empty<PlayerGroupMembership>())
             {
                 if (Joined(api, membership.GroupUid))
                 {
@@ -371,12 +371,29 @@ public static class PlayerFeed
         return Math.Max(0, Math.Min(chunks, api.Server.Config.MaxChunkRadius));
     }
 
+    /// <summary>
+    /// Everybody who is actually in the world.
+    ///
+    /// The game's list of online players also holds whoever is still connecting
+    /// — its own documentation warns so — and a connecting player already has
+    /// an entity standing at their last position for the half minute or more
+    /// their client takes to load, or for good where it never finishes. Counted,
+    /// that is a map saying somebody is on when nobody is; so every reading of
+    /// who is on goes through here, and here means playing.
+    /// </summary>
+    private static IEnumerable<IServerPlayer> Playing(ICoreServerAPI api)
+    {
+        return api.World.AllOnlinePlayers
+            .OfType<IServerPlayer>()
+            .Where(player => player.ConnectionState == EnumClientState.Playing);
+    }
+
     public static List<LivePlayer> All(ICoreServerAPI api, string exports)
     {
         var players = new List<LivePlayer>();
-        foreach (var player in api.World.AllOnlinePlayers)
+        foreach (var player in Playing(api))
         {
-            if (player?.Entity?.Pos is not { } position)
+            if (player.Entity?.Pos is not { } position)
             {
                 continue;
             }

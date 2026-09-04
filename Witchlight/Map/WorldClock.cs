@@ -60,8 +60,11 @@ public static class WorldClock
             return new LiveWorld();
         }
 
+        // `DayOfYear` counts from zero, the way the game's own `DayOfMonth`
+        // reads it: the first day of the year is day 0, and day 0 of a month is
+        // said as its 1st.
         var perMonth = Math.Max(1, calendar.DaysPerMonth);
-        var dayOfYear = Math.Max(0, calendar.DayOfYear - 1);
+        var dayOfYear = Math.Max(0, calendar.DayOfYear);
         var month = dayOfYear / perMonth;
         var day = dayOfYear % perMonth + 1;
         var hour = (int)calendar.HourOfDay;

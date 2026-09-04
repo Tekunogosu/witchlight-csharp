@@ -41,6 +41,7 @@ public static class Channel
         typeof(MarkAsk),
         typeof(MarkReply),
         typeof(MarkNudge),
+        typeof(SharedMarkerChange),
     };
 
     /// <summary>Registers everything the channel carries, on the server.</summary>

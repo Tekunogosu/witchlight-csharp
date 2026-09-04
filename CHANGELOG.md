@@ -13,6 +13,39 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.46.1
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. The game
+server restarts before the new map service is live.
+
+- How many are on, and where they stand, counts only players whose client has
+  finished joining. The game's list of online players also holds whoever is
+  still connecting — its own documentation warns so — and a connecting player
+  already stands in the world at their last position for as long as their
+  client takes to load, or for good where it never finishes. That read as one
+  player on a server nobody was on.
+- Nothing else moved here; the hidden player groups, the accessibility window
+  and the list icon size are in the map service — see its changelog.
+
+## 0.46.0
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service, which keeps logins across a restart — see its changelog.
+
+## 0.45.3
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. The game
+server restarts before the new map service is live.
+
+- Pinning somebody else's marker from the in-game map no longer fails with
+  "Not a valid index". Shared markers are drawn on a map layer of this mod's own
+  rather than borrowed into the game's waypoint list, where the game's edit
+  window addressed them by a place they did not have. A right click on one opens
+  a Witchlight window that keeps it in sight, and offers the name, colour and
+  picture when the server allows the change.
+- The date the map shows matched the game's a day late. The game counts the day
+  of the year from zero and the clock subtracted one more.
+
 ## 0.45.2
 
 **Deploy note:** both halves, upgraded together; nothing is cleared. Moved for

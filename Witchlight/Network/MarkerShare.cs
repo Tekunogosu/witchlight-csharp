@@ -31,6 +31,40 @@ public class SharedMarker
     /// it rides the per-player send rather than the marker itself.
     /// </summary>
     [ProtoMember(9)] public bool Pinned { get; set; }
+
+    /// <summary>
+    /// Whether the player this is being sent to may change it. Decided by the
+    /// server, which holds the rule, so the map can offer the fields or not
+    /// without a client ever guessing at what the server would allow.
+    /// </summary>
+    [ProtoMember(10)] public bool Editable { get; set; }
+}
+
+/// <summary>
+/// What a player asks of somebody else's marker from the in-game map.
+///
+/// A shared marker is drawn by this mod rather than by the game, so the game's
+/// own edit window cannot reach it: that window names a waypoint by its place in
+/// the asker's own list, and a marker that is not theirs has no such place.
+/// This names it by key, which is the one name both halves agree on.
+///
+/// Every ask carries the pin, and one that is also an edit says so. Whether the
+/// asker may do either is the server's to decide against the waypoint itself.
+/// </summary>
+[ProtoContract]
+public class SharedMarkerChange
+{
+    [ProtoMember(1)] public string Key { get; set; } = "";
+
+    /// <summary>Whether the asker keeps this marker in sight on their own map.</summary>
+    [ProtoMember(2)] public bool Pinned { get; set; }
+
+    /// <summary>Whether the fields below are meant, or only the pin.</summary>
+    [ProtoMember(3)] public bool Editing { get; set; }
+
+    [ProtoMember(4)] public string Title { get; set; } = "";
+    [ProtoMember(5)] public string Icon { get; set; } = Markers.PlainIcon;
+    [ProtoMember(6)] public int Color { get; set; }
 }
 
 /// <summary>Everything one player should see from everyone else.</summary>

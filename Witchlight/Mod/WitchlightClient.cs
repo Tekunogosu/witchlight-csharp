@@ -1,5 +1,6 @@
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.GameContent;
 
 namespace Witchlight;
 
@@ -18,9 +19,6 @@ public partial class WitchlightClient : ModSystem
 {
     private ICoreClientAPI? _capi;
 
-    /// <summary>Everyone else's markers, on this player's map.</summary>
-    private SharedMarkerLayer? _markers;
-
     /// <summary>Draws this player when asked. Only a client can: nobody else has them.</summary>
     private PortraitCapture? _portrait;
 
@@ -32,7 +30,12 @@ public partial class WitchlightClient : ModSystem
     public override void StartClientSide(ICoreClientAPI api)
     {
         _capi = api;
-        _markers = new SharedMarkerLayer(api);
+        // Everyone else's markers, on this player's map, as a layer of this
+        // mod's own. The game makes it when the world loads; what it shows is
+        // handed to it as it arrives.
+        api.ModLoader.GetModSystem<WorldMapManager>()
+            .RegisterMapLayer<SharedMarkerMapLayer>(
+                SharedMarkerMapLayer.Code, SharedMarkerMapLayer.Position);
         ListenForMarking(api);
         _portrait = new PortraitCapture(api);
         _watch = new PortraitWatch(api, () => SendPortrait(byHand: false));
@@ -40,7 +43,7 @@ public partial class WitchlightClient : ModSystem
         api.Network
             .RegisterChannel(Channel.Name)
             .Carrying()
-            .SetMessageHandler<SharedMarkers>(message => _markers?.Take(message))
+            .SetMessageHandler<SharedMarkers>(message => SharedMarkerMapLayer.On(api)?.Take(message))
             .SetMessageHandler<PaletteRequest>(OnPaletteRequest)
             .SetMessageHandler<IconRequest>(OnIconRequest)
             .SetMessageHandler<PortraitRequest>(_ => SendPortrait(byHand: false))
