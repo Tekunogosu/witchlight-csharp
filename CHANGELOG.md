@@ -13,6 +13,18 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.46.5
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: a player icon size, and the colour choice as a button — see
+its changelog.
+
+## 0.46.4
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: claims say what you may do on them, open on a right click,
+and players choose their colour — see its changelog.
+
 ## 0.46.3
 
 **Deploy note:** both halves, upgraded together; nothing is cleared. The game
