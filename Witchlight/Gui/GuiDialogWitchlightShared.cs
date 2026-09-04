@@ -27,6 +27,7 @@ public class GuiDialogWitchlightShared : GuiDialogGeneric
     private const string ColourPicker = "colorPicker";
     private const string PicturePicker = "iconPicker";
     private const string PinSwitch = "pinSwitch";
+    private const string PresetSwitch = "presetSwitch";
 
     /// <summary>The game's own numbers for a switch, said once.</summary>
     private const int SwitchSize = 30;
@@ -41,6 +42,7 @@ public class GuiDialogWitchlightShared : GuiDialogGeneric
     private string _picture;
     private int _colour;
     private bool _pinned;
+    private bool _preset;
 
     public GuiDialogWitchlightShared(
         ICoreClientAPI capi, WaypointMapLayer layer, SharedMarker marker, Action<SharedMarkerChange> send)
@@ -66,6 +68,13 @@ public class GuiDialogWitchlightShared : GuiDialogGeneric
     /// way every other window does and closes on the key that closes those.
     /// </summary>
     public override bool PrefersUngrabbedMouse => true;
+
+    /// <summary>
+    /// Over the world map, which is where it is opened from. The game draws its
+    /// own waypoint windows at this order for the same reason; at the default a
+    /// window is drawn under the map and only its edge past the map shows.
+    /// </summary>
+    public override double DrawOrder => 0.2;
 
     public override bool TryOpen()
     {
@@ -133,23 +142,30 @@ public class GuiDialogWitchlightShared : GuiDialogGeneric
             toggle = ElementBounds.Fixed(0, label.fixedY + label.fixedHeight + 9, SwitchWidth, SwitchSize);
         }
 
+        var keep = toggle.BelowCopy(0, 6);
         SingleComposer = compo
             // The one thing anybody may decide about somebody else's marker:
             // whether their own map holds it against the edge rather than
             // letting it scroll off. Theirs alone; nobody else's map moves.
             .AddSwitch(on => _pinned = on, toggle, PinSwitch, SwitchSize, SwitchPad)
-            .AddStaticText("Keep in sight", CairoFont.WhiteSmallText(), Beside(toggle))
+            .AddStaticText("Pin marker", CairoFont.WhiteSmallText(), Beside(toggle))
+            // And one thing they may take from it: what it is called, its
+            // picture and its colour, as a preset of their own for the block it
+            // was made on. The marker stays whose it is.
+            .AddSwitch(on => _preset = on, keep, PresetSwitch, SwitchSize, SwitchPad)
+            .AddStaticText("Save as preset", CairoFont.WhiteSmallText(), Beside(keep))
             .AddSmallButton("Cancel", OnCancel,
-                row.FlatCopy().FixedUnder(toggle, 30).WithFixedWidth(100),
+                row.FlatCopy().FixedUnder(keep, 30).WithFixedWidth(100),
                 EnumButtonStyle.Normal)
             .AddSmallButton("Save", OnSave,
-                row.FlatCopy().FixedUnder(toggle, 30).WithFixedWidth(100)
+                row.FlatCopy().FixedUnder(keep, 30).WithFixedWidth(100)
                     .WithAlignment(EnumDialogArea.RightFixed),
                 EnumButtonStyle.Normal)
             .EndChildElements()
             .Compose();
 
         SingleComposer.GetSwitch(PinSwitch).SetValue(_pinned);
+        SingleComposer.GetSwitch(PresetSwitch).SetValue(_preset);
         if (_marker.Editable)
         {
             SingleComposer.GetTextInput(NameInput).SetValue(Markers.Title(_marker.Title));
@@ -194,6 +210,7 @@ public class GuiDialogWitchlightShared : GuiDialogGeneric
         {
             Key = _marker.Key,
             Pinned = _pinned,
+            KeepPreset = _preset,
             Editing = _marker.Editable,
             Title = _marker.Title,
             Icon = _marker.Icon,

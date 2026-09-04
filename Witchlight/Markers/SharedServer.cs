@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Threading.Tasks;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
@@ -121,6 +122,66 @@ public static class SharedServer
             api, waypoint, waypoint.Position, Markers.Title(change.Title),
             Markers.Picture(change.Icon), change.Color);
         return true;
+    }
+
+    /// <summary>
+    /// The preset one player asked to keep from somebody else's marker, or
+    /// nothing where they did not ask or there is no block to key it on.
+    ///
+    /// Keyed on the block the marker was made on, where the server recorded
+    /// one, and otherwise on the block under it — the rule a marker made on the
+    /// web follows. The name, picture and colour are the marker's as the asker
+    /// saw them, or as they changed them where they may.
+    /// </summary>
+    public static Preset? Keeping(ICoreServerAPI api, SharedMarkerChange change, Origins origins)
+    {
+        if (!change.KeepPreset)
+        {
+            return null;
+        }
+
+        var waypoint = Markers.ByGuid(api, change.Key);
+        if (waypoint?.Position is null)
+        {
+            return null;
+        }
+
+        var code = origins.Of(waypoint.Guid);
+        if (code.Length == 0)
+        {
+            code = Marking.CodeUnder(
+                api, Blocks.At(waypoint.Position.X), Blocks.At(waypoint.Position.Y), Blocks.At(waypoint.Position.Z));
+        }
+        var pattern = BlockPattern.Widened(code);
+        if (pattern.Length == 0)
+        {
+            return null;
+        }
+
+        return new Preset
+        {
+            Pattern = pattern,
+            Title = Markers.Title(change.Editing ? change.Title : waypoint.Title ?? ""),
+            Icon = Markers.Picture(change.Editing ? change.Icon : waypoint.Icon),
+            Color = Markers.Hex(change.Editing ? change.Color : waypoint.Color),
+        };
+    }
+
+    /// <summary>
+    /// Keeps a preset on the map service and tells the asker how it went, off
+    /// the game thread and back on it: nothing waits on the service, and a
+    /// preset that quietly failed is a switch pressed again tomorrow.
+    /// </summary>
+    public static void Keep(ICoreServerAPI api, MapService service, IServerPlayer player, Preset preset)
+    {
+        _ = Task.Run(async () =>
+        {
+            var kept = await Presets.Keep(service, player.PlayerUID, preset, api.Logger).ConfigureAwait(false);
+            var said = kept is null
+                ? $"The map would not keep the preset for {preset.Pattern}."
+                : $"Kept as a preset for {preset.Pattern}.";
+            api.Event.EnqueueMainThreadTask(() => Tell(api, player, said), "witchlight preset kept");
+        });
     }
 
     private static void Tell(ICoreServerAPI api, IServerPlayer player, string said) =>

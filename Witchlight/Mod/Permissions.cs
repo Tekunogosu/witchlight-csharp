@@ -133,6 +133,7 @@ public static class Permissions
     {
         Settled.Clear();
         var known = new HashSet<string>(Privilege.AllCodes(), StringComparer.Ordinal);
+        var named = Named();
 
         foreach (var (name, gate) in ByDefault)
         {
@@ -143,9 +144,35 @@ public static class Permissions
                 AdminWord => Privilege.controlserver,
                 PlayerWord => Privilege.chat,
                 _ when known.Contains(said) => said,
+                _ when named.TryGetValue(said, out var code) => code,
                 _ => Refused(log, gate.Key, said),
             };
         }
+    }
+
+    /// <summary>
+    /// The game's names for its privileges, by name, where the name and the
+    /// code differ.
+    ///
+    /// The game calls the privilege to claim land <c>claimland</c> and gives it
+    /// the code <c>areamodify</c>; the settings file names it the way the game
+    /// does, and the file used to be refused for it — which shut claiming to
+    /// everybody but admins on every server that never touched the setting.
+    /// Read off the game's own table rather than written here, so a privilege
+    /// it renames tomorrow is still understood.
+    /// </summary>
+    private static Dictionary<string, string> Named()
+    {
+        var named = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var field in typeof(Privilege).GetFields(
+                     System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+        {
+            if (field.FieldType == typeof(string) && field.GetValue(null) is string code && field.Name != code)
+            {
+                named[field.Name] = code;
+            }
+        }
+        return named;
     }
 
     /// <summary>
@@ -167,7 +194,8 @@ public static class Permissions
             Settings.Path,
             AdminWord,
             PlayerWord,
-            string.Join(", ", Privilege.AllCodes().OrderBy(code => code, StringComparer.Ordinal)));
+            string.Join(", ", Privilege.AllCodes().Concat(Named().Keys)
+                .OrderBy(code => code, StringComparer.Ordinal)));
         return Privilege.controlserver;
     }
 

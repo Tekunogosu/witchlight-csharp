@@ -13,6 +13,29 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.46.3
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. The game
+server restarts before the new map service is live.
+
+- Claiming land from the map works for players again. The settings file names
+  the privilege the way the game does, `claimland`, and the mod checked the
+  word against the game's privilege *codes*, where it is `areamodify` — so the
+  default was refused and claiming fell back to admins only, with a warning in
+  the log on every start. The game's names are now understood beside its codes,
+  in every `commands` and `claims` setting, and no settings file needs editing.
+- The window on somebody else's marker draws over the world map rather than
+  under its right edge, at the place the game's own waypoint window takes.
+- Its switch reads "Pin marker", and a second switch, "Save as preset", keeps
+  the marker's name, picture and colour as a preset of your own for the block it
+  was made on. A chat line says it was kept, and under which block pattern.
+
+## 0.46.2
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service, which lays its accessibility window out afresh — see its
+changelog.
+
 ## 0.46.1
 
 **Deploy note:** both halves, upgraded together; nothing is cleared. The game

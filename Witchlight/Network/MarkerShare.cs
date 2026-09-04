@@ -65,6 +65,10 @@ public class SharedMarkerChange
     [ProtoMember(4)] public string Title { get; set; } = "";
     [ProtoMember(5)] public string Icon { get; set; } = Markers.PlainIcon;
     [ProtoMember(6)] public int Color { get; set; }
+
+    /// <summary>Whether the asker keeps the marker's name, picture and colour
+    /// as a preset of their own, for the block it was made on.</summary>
+    [ProtoMember(7)] public bool KeepPreset { get; set; }
 }
 
 /// <summary>Everything one player should see from everyone else.</summary>

@@ -553,6 +553,10 @@ public partial class WitchlightSystem : ModSystem
         }
 
         var changed = SharedServer.Apply(api, player, change, _visibility, _pins);
+        if (SharedServer.Keeping(api, change, _origins) is { } preset && _service is { } service)
+        {
+            SharedServer.Keep(api, service, player, preset);
+        }
         if (changed)
         {
             SharedServer.SendToAll(api, _visibility, _pins);
