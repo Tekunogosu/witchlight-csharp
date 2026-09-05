@@ -13,6 +13,29 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.49.0
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: hotkeys on the web map, rebindable from the account window —
+see its changelog.
+
+## 0.48.2
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: the marker window names the block a marker is on — see its
+changelog.
+
+## 0.48.1
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: the Visible column's spacing — see its changelog.
+
+## 0.48.0
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: a Visible column in the marker list and a clear button on
+every search — see its changelog.
+
 ## 0.47.3
 
 **Deploy note:** both halves, upgraded together; nothing is cleared.
