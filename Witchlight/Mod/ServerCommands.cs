@@ -197,11 +197,12 @@ public partial class WitchlightSystem
             _serviceProcess?.Describe() ?? $"service: not run from here; settings at {Settings.Path}",
             _palettes switch
             {
+                { Needed: true } =>
+                    "wanted: a palette from a player's client — the next to join is asked",
                 { Gaps.Count: > 0 } exchange =>
-                    $"wanted: a palette from a player's client, for {exchange.Gaps.Count} block(s) "
-                    + "the map cannot draw",
-                { Wanted: true } => "wanted: a palette from a player's client",
-                _ => "wanted: nothing, the palette is good enough",
+                    $"wanted: nothing — a client supplied this mod set's palette; {exchange.Gaps.Count} "
+                    + "block(s) still have no colour, which is a report for the mod shipping them",
+                _ => "wanted: nothing — a client supplied this mod set's palette",
             },
             _exporter?.Describe() ?? "terrain: not exporting yet",
             $"mapped: {_exporter?.Mapped ?? 0} chunks",
@@ -316,13 +317,13 @@ public partial class WitchlightSystem
     ///
     /// They differ in one line each and were three copies of the same twenty:
     /// find the player named, or the one who typed it; refuse if there is nobody
-    /// to ask; refuse if the player named may not be asked for this.
+    /// to ask.
     ///
-    /// Whom a thing may be taken from is the same question as who may ask for it,
-    /// so it is the same setting: a server that lets its players fetch a palette
-    /// lets its players be fetched from. What guards the map either way is what
-    /// is done with the answer — only an admin's replaces a colour somebody
-    /// already chose.
+    /// The setting says who may start the request and nothing about whom it may
+    /// be sent to: anyone with the mod can be asked, and the server asks round
+    /// the room on its own with no privilege in hand. What guards the map either
+    /// way is what is done with the answer — only an admin's replaces a colour
+    /// somebody already chose.
     /// </summary>
     private TextCommandResult Asking(
         TextCommandCallingArgs args,
@@ -348,13 +349,6 @@ public partial class WitchlightSystem
                 ? $"no player to ask — name {Permissions.Who(command)} who is online, "
                   + "or run this in game"
                 : $"{named} is not online");
-        }
-
-        if (!Permissions.Holds(target, command))
-        {
-            return TextCommandResult.Error(
-                $"{target.PlayerName} may not be asked for that — `commands.{command}` in "
-                + $"{Settings.Path} says it is taken from {Permissions.Who(command)}");
         }
 
         return TextCommandResult.Success(ask(target));

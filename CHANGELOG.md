@@ -13,6 +13,43 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.46.8
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. The palette
+is asked for once more on this start if what is stored did not come from a
+client. `commands.palette` now defaults to `admin`.
+
+- Who may see whom is worked out for everybody in a group, on or not, so a
+  player signed in to the map with their own player offline still sees their
+  group.
+- A portrait is asked for on join only where the map has none. The client
+  sends a new one when what is worn or the skin actually changes, not on every
+  slot event — armour wearing down sent the same picture every few minutes.
+- A palette is asked for until a client has supplied one for this mod set, and
+  then never on the server's own initiative: a mod changing or an admin running
+  `/witchlight palette` is what asks again. Coverage and gaps are reported and
+  no longer nag.
+- `/witchlight palette` is an operator's command by default. Anybody with the
+  mod may still be asked, and a palette from a client that was not asked is
+  refused. The commands that ask a client for something no longer refuse a
+  target who lacks the command's own privilege.
+
+## 0.46.7
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: the profile window's layout and its colour palette — see its
+changelog.
+
+## 0.46.6
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. A settings
+file already written keeps whatever `per_world` it says.
+
+- A fresh settings file is written with `per_world = true` whether the server is
+  dedicated or singleplayer, and a file that says nothing about it reads as on.
+  Moved with the map service, where the claim being drawn now stays on the map
+  while its window is open — see its changelog.
+
 ## 0.46.5
 
 **Deploy note:** both halves, upgraded together; nothing is cleared. Moved for

@@ -178,11 +178,13 @@ public static class PlayerFeed
     /// nothing else to work out. Where they are not, each person gets a list of
     /// their own: themselves, and whoever the game has in a group with them.
     ///
-    /// Only players who are on can be sorted this way, because a group membership
-    /// is read off the player and the game hands that out for the ones it has in
-    /// the world. Somebody looking at the map while their own player is offline
-    /// therefore sees what everybody sees — which is the same answer the setting
-    /// gives anyone the server has not placed in a group.
+    /// A list is built for everybody in a group, on or not, and not only for the
+    /// players in the world: somebody signed in to the map while their own player
+    /// is offline is still in their group, and the group is still theirs to see.
+    /// Memberships come from the server's own player data — see
+    /// <see cref="AllGroups"/> — which names every member whether or not they are
+    /// on, so the answer is the same for a player who just left as for one who
+    /// never came.
     /// </summary>
     public static LivePlayers Seen(ICoreServerAPI api, string exports)
     {
@@ -198,25 +200,27 @@ public static class PlayerFeed
             sorted.Public = players;
         }
 
-        var groups = GroupsOf(api);
         sorted.Groups = AllGroups(api);
-        foreach (var player in players)
-        {
-            if (player.Uid.Length == 0)
-            {
-                continue;
-            }
+        var groups = GroupsOf(sorted.Groups);
 
-            var mine = groups.TryGetValue(player.Uid, out var held) ? held : new HashSet<int>();
+        // Everybody with a list to build: whoever is on, and whoever is in a group.
+        var everybody = players.Select(player => player.Uid)
+            .Concat(groups.Keys)
+            .Where(uid => uid.Length > 0)
+            .Distinct(StringComparer.Ordinal);
+
+        foreach (var uid in everybody)
+        {
+            var mine = groups.TryGetValue(uid, out var held) ? held : new HashSet<string>();
             var together = players
-                .Where(other => other.Uid.Length > 0 && (other.Uid == player.Uid
+                .Where(other => other.Uid.Length > 0 && (other.Uid == uid
                     || (groups.TryGetValue(other.Uid, out var theirs) && theirs.Overlaps(mine))))
                 .ToList();
 
-            sorted.Grouped[player.Uid] = together.Select(other => other.Uid).ToList();
+            sorted.Grouped[uid] = together.Select(other => other.Uid).ToList();
             if (!everyones)
             {
-                sorted.Private[player.Uid] = together;
+                sorted.Private[uid] = together;
             }
         }
 
@@ -224,32 +228,27 @@ public static class PlayerFeed
     }
 
     /// <summary>
-    /// Which groups the game has each online player in, by uid.
+    /// Which groups each player is in, by uid, read the other way round from the
+    /// group table.
     ///
     /// Worked out once per post rather than per pair: comparing everybody with
-    /// everybody is already a square of the players online, and reading the
-    /// memberships off the entity inside that loop would make it a cube of them.
+    /// everybody is already a square of the players, and searching every group
+    /// inside that loop would make it a cube of them.
     /// </summary>
-    private static Dictionary<string, HashSet<int>> GroupsOf(ICoreServerAPI api)
+    private static Dictionary<string, HashSet<string>> GroupsOf(Dictionary<string, LiveGroup> all)
     {
-        var groups = new Dictionary<string, HashSet<int>>();
-        foreach (var player in Playing(api))
+        var groups = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var (id, group) in all)
         {
-            var uid = player.PlayerUID;
-            if (string.IsNullOrEmpty(uid))
+            foreach (var uid in group.Members)
             {
-                continue;
-            }
-
-            var held = new HashSet<int>();
-            foreach (var membership in player.Groups ?? Array.Empty<PlayerGroupMembership>())
-            {
-                if (Joined(api, membership.GroupUid))
+                if (!groups.TryGetValue(uid, out var held))
                 {
-                    held.Add(membership.GroupUid);
+                    held = new HashSet<string>(StringComparer.Ordinal);
+                    groups[uid] = held;
                 }
+                held.Add(id);
             }
-            groups[uid] = held;
         }
         return groups;
     }

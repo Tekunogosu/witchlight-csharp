@@ -21,6 +21,14 @@ namespace Witchlight;
 /// configuration, which is who they chose to be. Neither the hotbar nor the
 /// backpack is watched — a portrait is cut to the head and shoulders, so what is
 /// carried never appears in it.
+///
+/// A slot event is only the signal to look. Armour wearing down and a garment
+/// repaired both modify the slot they sit in without changing what is worn, and
+/// each of those used to be a portrait sent — the same picture, every few
+/// minutes, all session. So what is compared is what is worn: the item in each
+/// slot and the skin chosen, as one string, and a settled burst that leaves it
+/// where it was sends nothing. The first look after joining only records it —
+/// the server asks for a picture itself where it has none.
 /// </summary>
 public sealed class PortraitWatch
 {
@@ -42,6 +50,9 @@ public sealed class PortraitWatch
 
     /// <summary>When this character last changed, or null when it is settled.</summary>
     private DateTime? _changedAt;
+
+    /// <summary>What was worn the last time this looked, or null before it has.</summary>
+    private string? _worn;
 
     public PortraitWatch(ICoreClientAPI capi, Action send)
     {
@@ -70,7 +81,41 @@ public sealed class PortraitWatch
         }
 
         _changedAt = null;
-        _send();
+        var worn = Worn();
+        var first = _worn is null;
+        if (worn == _worn)
+        {
+            return;
+        }
+
+        _worn = worn;
+        if (!first)
+        {
+            _send();
+        }
+    }
+
+    /// <summary>
+    /// What this player looks like, as one string that moves when the look does.
+    ///
+    /// The item in each clothing slot by its code — not the stack, whose
+    /// durability moves with every hit taken — and the skin configuration as the
+    /// game serialises it. Nothing about order is assumed: the slots are read in
+    /// the inventory's own order, which is fixed for a character.
+    /// </summary>
+    private string Worn()
+    {
+        var parts = new System.Text.StringBuilder();
+        if (_wearing is not null)
+        {
+            foreach (var slot in _wearing)
+            {
+                parts.Append(slot?.Itemstack?.Collectible?.Code?.ToString() ?? "-").Append('|');
+            }
+        }
+
+        parts.Append(_skin?.GetTreeAttribute("skinConfig")?.ToJsonToken() ?? "");
+        return parts.ToString();
     }
 
     /// <summary>
@@ -97,7 +142,10 @@ public sealed class PortraitWatch
                 _wearing.SlotModified += OnSlotModified;
             }
 
-            _changedAt = null;
+            // A new character is looked at afresh: what the last one wore says
+            // nothing about this one, and the first look records rather than sends.
+            _worn = null;
+            _changedAt = DateTime.UtcNow;
         }
 
         var skin = _capi.World?.Player?.Entity?.WatchedAttributes;

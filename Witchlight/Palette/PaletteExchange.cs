@@ -29,26 +29,17 @@ namespace Witchlight;
 /// what is already right. So a player's palette is merged as filler, an admin's
 /// is preferred, and `/witchlight palette` is the way back either way.
 ///
-/// Two separate things are therefore worth asking for, and they are asked for on
-/// different terms. **A missing colour** is a hole in the map and anybody who can
-/// see it can fill it, so the room is asked — an admin first, since theirs is the
-/// answer the map should keep, and otherwise whoever is about. **An unconfirmed
-/// tileset** is not a hole at all: the base game's colours ship with this mod and
-/// a server running them is fully drawn from the moment it starts, but nobody has
-/// yet said those are the colours this server should look like. A texture pack
-/// changes every one of them without changing a block code, so each admin is
-/// asked once, and their answer either matches what is stored — in which case
-/// nothing is written and nothing is redrawn — or replaces it.
+/// **A palette is asked for until a client has supplied one for this mod set,
+/// and then not again.** Nothing stored from a client for this block registry,
+/// or a mod set that moved since it was stored, is the one thing that makes a
+/// client's palette worth asking for on the server's own initiative; once one
+/// has answered, the map is that client's colours until a mod changes or an
+/// admin runs `/witchlight palette`. Coverage and named gaps are reported and
+/// are not a reason to ask: a block no client can colour is a block whose mod
+/// ships no texture, and asking round the room for ever does not change that.
 /// </summary>
 public sealed class PaletteExchange
 {
-    /// <summary>
-    /// How much of what there is must have a colour before the server stops
-    /// asking. A dedicated server with no block textures scores near zero; one
-    /// running from a full game install scores near one.
-    /// </summary>
-    private const double RequiredCoverage = 0.9;
-
     /// <summary>How long to wait before saying an ask went unanswered.</summary>
     private const int ReplyWaitMs = 30000;
 
@@ -71,13 +62,6 @@ public sealed class PaletteExchange
         "so the map still has no colour for the blocks it is missing");
 
     /// <summary>
-    /// The map is drawn and nobody who could decide has said it is drawn right.
-    /// </summary>
-    private static readonly Reason ToConfirm = new(
-        "to confirm the map is showing this server's own colours",
-        "so the map keeps the colours it has, which is no worse than before");
-
-    /// <summary>
     /// What the bootstrap settled on, carried from one lifecycle stage to the next.
     ///
     /// The palette must be built at asset load and can only be asked for once the
@@ -85,7 +69,7 @@ public sealed class PaletteExchange
     /// the build hands its answer over rather than leaving it in a field for the
     /// asking half to find.
     /// </summary>
-    public sealed record Built(Palette Palette, string Fingerprint);
+    public sealed record Built(Palette Palette, string Fingerprint, bool Needed);
 
     private readonly ICoreServerAPI _api;
     private readonly string _exports;
@@ -107,11 +91,14 @@ public sealed class PaletteExchange
     private string? _askedUid;
     private DateTime _askedAt = DateTime.MinValue;
 
-    /// <summary>Whether the palette in hand colours too little of the registry.</summary>
-    private bool _poor;
-
-    /// <summary>Whether an admin's own assets have settled the colours in hand.</summary>
-    private bool _fromAdmin;
+    /// <summary>
+    /// Whether a client has yet to supply a palette for this mod set.
+    ///
+    /// Set once at start from what is on disk — see <see cref="NeedsAClient"/> —
+    /// and cleared by the first whole palette a client sends. Nothing else moves
+    /// it: what is asked for on the server's own initiative is this and only this.
+    /// </summary>
+    private bool _needed;
 
     /// <summary>Block ids the palette in hand says put nothing where they stand.</summary>
     private HashSet<int> _hidden = new();
@@ -139,7 +126,8 @@ public sealed class PaletteExchange
     ///
     /// Emptied only by `/witchlight palette`, which is an admin saying that the
     /// colours themselves have moved under the same blocks — the one case none of
-    /// this can see.
+    /// this can see. Also what says whose palette is taken: one from anybody not
+    /// in here is not an answer to anything and is refused.
     /// </summary>
     private readonly HashSet<string> _asked = new(StringComparer.Ordinal);
 
@@ -149,34 +137,30 @@ public sealed class PaletteExchange
         _exports = exports;
         Fingerprint = built.Fingerprint;
         _mostSlices = built.Palette.Blocks.Count / PaletteTable.SliceSize + 2;
+        _needed = built.Needed;
         Settled(built.Palette);
     }
+
+    /// <summary>
+    /// Whether a client's palette is worth asking for on the server's own
+    /// initiative: nothing stored from a client for this block registry, or a
+    /// mod set that moved since it was.
+    ///
+    /// One function, because it is asked twice — once to say so in the boot
+    /// report and once to decide whether to ask — and two readings of the same
+    /// file could disagree about the same server.
+    /// </summary>
+    private static bool NeedsAClient(Palette palette, string fingerprint, bool moved) =>
+        moved || palette.Source != "client" || palette.Fingerprint != fingerprint;
 
     /// <summary>What this server's block registry hashes to.</summary>
     public string Fingerprint { get; }
 
-    /// <summary>
-    /// Whether a palette from a client would improve on the one in hand.
-    ///
-    /// Two reasons, and either is enough: the palette colours too little of the
-    /// registry to draw a map at all, or it has a specific block it cannot draw
-    /// that it ought to be able to. The second is the one that keeps a map
-    /// correct after it is already working.
-    /// </summary>
-    public bool Wanted => _poor || _gaps.Count > 0;
+    /// <summary>Whether the next player to join is asked for a palette.</summary>
+    public bool Needed => _needed;
 
     /// <summary>What this palette cannot draw and should be able to.</summary>
     public IReadOnlyList<string> Gaps => _gaps;
-
-    /// <summary>
-    /// Whether nobody who could decide what this server looks like has decided.
-    ///
-    /// A different question from <see cref="Wanted"/> and it outlives it: a map
-    /// drawn entirely from the colours this mod ships is complete, and still
-    /// nobody has said those are this server's colours rather than the base
-    /// game's. One ask of one admin settles it either way.
-    /// </summary>
-    public bool Unconfirmed => !_fromAdmin;
 
     /// <summary>
     /// Takes the palette now in hand, which is what decides whether another is
@@ -184,9 +168,7 @@ public sealed class PaletteExchange
     /// </summary>
     private void Settled(Palette palette)
     {
-        _poor = palette.Coverage < RequiredCoverage;
         _gaps = palette.Uncoloured;
-        _fromAdmin = palette.FromAdmin;
         _hidden = palette.Blocks.Values
             .Where(entry => entry.Invisible == true)
             .Select(entry => entry.Id)
@@ -279,37 +261,25 @@ public sealed class PaletteExchange
 
         var written = palette.Write(path);
 
-        // Coverage, and nothing about a mod's version number: witchlight ships no
-        // block textures, so its own releases moved the stamp and every admin
-        // joining was asked for a palette that was already correct — and every one
-        // of those answers blanked the map while it redrew.
-        //
-        // Coverage is not the whole of whether a palette is wanted; a specific
-        // block it cannot draw is the other half, and that is watched from the
-        // palette itself rather than settled once here — see `Settled`.
-        //
-        // A texture changing under an unmoved block id is the case neither can
-        // see, and it is the case `/witchlight palette` exists for.
-        //
-        // Read after the seed above, not before it: a dedicated server running
-        // the base game is now fully coloured by the time this is asked, and a
-        // line telling its operator that the next player will be asked for a
-        // palette would be describing a server other than theirs.
-        var poor = palette.Coverage < RequiredCoverage;
+        // Whether a client is asked is decided here, once, from what is on disk:
+        // a palette a client built for this registry, with the mod set where it
+        // was, is this server's colours until an admin says otherwise. A texture
+        // changing under an unmoved block id and an unmoved mod set is the case
+        // nothing can see, and it is the case `/witchlight palette` exists for.
+        var needed = NeedsAClient(palette, built.Fingerprint, moved);
 
-        Report(api, exports, palette, existing, valid, moved, written, report, poor);
+        Report(api, exports, palette, existing, valid, moved, written, report, needed);
         Vanilla.Report(api, seeded);
-        return new Built(palette, built.Fingerprint);
+        return new Built(palette, built.Fingerprint, needed);
     }
 
     /// <summary>
-    /// Asks whoever in the room is best placed to answer, if anything is worth
-    /// asking for.
+    /// Asks whoever in the room is best placed to answer, while no client has.
     ///
-    /// The one way an ask is ever made unprompted, and the one place the two
-    /// reasons for making one are weighed. It runs on the export beat and again
-    /// as each player joins, which is what makes a joining admin the person asked
-    /// rather than whoever happened to be standing about.
+    /// The one way an ask is ever made unprompted. It runs on the export beat and
+    /// again as each player joins, which is what makes a joining admin the person
+    /// asked rather than whoever happened to be standing about, and stops for
+    /// good the moment a whole palette arrives — see <see cref="Accept"/>.
     ///
     /// **An admin is asked first, always.** Theirs is the tileset the map should
     /// look like, so where one is in the room there is no reason to ask anybody
@@ -319,17 +289,17 @@ public sealed class PaletteExchange
     /// server does not put the same person's client to work every time it comes
     /// up.
     ///
-    /// **Nobody outside the setting is asked at all.** `commands.palette` says
-    /// who may be asked for one by hand, and a server that has narrowed that has
-    /// said something about whose assets it trusts — asking round the room past
-    /// it would be the mod overruling its own operator.
+    /// **Anybody with the mod may be asked.** `commands.palette` says who may
+    /// start a request by hand and nothing about whom one may be sent to: a
+    /// client answering is only lending its textures, and what is done with the
+    /// answer is where the map is guarded.
     ///
     /// One at a time, because the table is a few hundred kilobytes and every copy
     /// after the first is thrown away.
     /// </summary>
     public void AskAround(IEnumerable<IServerPlayer> playing)
     {
-        if (!Wanted && !Unconfirmed)
+        if (!_needed)
         {
             return;
         }
@@ -341,22 +311,12 @@ public sealed class PaletteExchange
 
         var room = playing
             .Where(player => !_asked.Contains(player.PlayerUID))
-            .Where(player => Permissions.Holds(player, Permissions.Palette))
             .ToList();
         var admins = room.Where(player => player.HasPrivilege(Privilege.controlserver)).ToList();
 
-        if (OneOf(admins) is { } admin)
+        if ((OneOf(admins) ?? OneOf(room)) is { } somebody)
         {
-            Ask(admin, Wanted ? ForColours : ToConfirm);
-            return;
-        }
-
-        // Only a hole in the map is worth troubling a player who cannot settle
-        // what the map should look like. An unconfirmed tileset is a question
-        // only an admin can answer, so it waits for one however long that takes.
-        if (Wanted && OneOf(room) is { } anybody)
-        {
-            Ask(anybody, ForColours);
+            Ask(somebody, ForColours);
         }
     }
 
@@ -373,7 +333,8 @@ public sealed class PaletteExchange
 
     /// <summary>
     /// Asks now, whatever the current palette looks like and whoever was asked
-    /// last. What `/witchlight palette` does.
+    /// last. What `/witchlight palette` does, and the only way a palette is
+    /// asked for again once a client has supplied one.
     /// </summary>
     public void AskAnyway(IServerPlayer player)
     {
@@ -423,6 +384,18 @@ public sealed class PaletteExchange
     /// </summary>
     public void Accept(IServerPlayer player, PaletteTable table)
     {
+        // A palette arrives because this server asked for it, and from nobody
+        // else: the request is what `commands.palette` gates, and a client that
+        // could send one unasked would be a way round that gate.
+        if (!_asked.Contains(player.PlayerUID))
+        {
+            _api.Logger.Warning(
+                "[witchlight] ignored a palette from {0}, who was not asked for one",
+                player.PlayerName);
+            _incoming.Remove(player.PlayerUID);
+            return;
+        }
+
         if (!Sane(player, table))
         {
             return;
@@ -476,9 +449,11 @@ public sealed class PaletteExchange
 
         var written = merged.Write(path);
         var before = _gaps;
-        var confirmed = trusted && Unconfirmed;
         Settled(merged);
         _askedUid = null;
+        // A client has answered for this mod set, and that is the end of asking
+        // until a mod moves or an admin runs the command.
+        _needed = false;
 
         _api.Logger.Notification(
             "[witchlight] palette from {0}{1}: {2} of {3} blocks coloured ({4:P0}){5}{6}",
@@ -488,21 +463,7 @@ public sealed class PaletteExchange
             merged.Textured,
             merged.Coverage,
             written ? "" : ", unchanged — the map was not redrawn",
-            Wanted ? ", still incomplete" : "");
-
-        // The answer to the question an admin was asked, said plainly, because
-        // the two outcomes look identical from the line above and mean opposite
-        // things about whether anybody needs to look at the map.
-        if (confirmed)
-        {
-            _api.Logger.Notification(
-                written
-                    ? "[witchlight] {0} is an admin, so these are now the colours this server "
-                      + "shows — the map is being redrawn with them"
-                    : "[witchlight] {0} is an admin and their colours are the ones already "
-                      + "stored, so nothing changed and the map was not redrawn",
-                player.PlayerName);
-        }
+            "; nobody else is asked until a mod changes or `/witchlight palette` is run");
 
         ReportGaps(before);
     }
@@ -514,9 +475,8 @@ public sealed class PaletteExchange
     /// an operator can act on: a block nobody's client can colour is a block whose
     /// mod ships no texture for it, and that is a report to make to that mod
     /// rather than a command to run again here. Said once per answer, and the
-    /// asking runs out on its own once everybody has been asked — see
-    /// <see cref="_asked"/> — so a gap nobody can fill is reported rather than
-    /// chased for ever.
+    /// asking stops with the first answer, so a gap nobody can fill is reported
+    /// rather than chased.
     /// </summary>
     private void ReportGaps(IReadOnlyList<string> before)
     {
@@ -595,9 +555,7 @@ public sealed class PaletteExchange
         var gaps = palette.Uncoloured;
         return $"palette: from {palette.Source}, {palette.Coloured} of {palette.Blocks.Count} blocks "
             + $"coloured ({palette.Coverage:P0}), for registry {palette.Fingerprint}"
-            + (palette.FromAdmin
-                ? ", settled by an admin"
-                : ", not yet confirmed by an admin — the next one to join is asked once")
+            + (palette.FromAdmin ? ", settled by an admin" : "")
             + (palette.Fingerprint == Fingerprint ? "" : $" — STALE, this server is {Fingerprint}")
             + (gaps.Count == 0
                 ? ""
@@ -618,13 +576,13 @@ public sealed class PaletteExchange
         bool moved,
         bool written,
         PaletteReport report,
-        bool wanted)
+        bool needed)
     {
         if (moved)
         {
             api.Logger.Notification(
-                "[witchlight] a mod moved since these {0} colours were built — keeping them. "
-                + "Run `/witchlight palette` if a mod changed its block textures.",
+                "[witchlight] a mod moved since these {0} colours were built — keeping them "
+                + "until a client supplies a fresh set, which the next player to join is asked for.",
                 palette.Coloured);
         }
 
@@ -640,10 +598,11 @@ public sealed class PaletteExchange
                 palette.Coloured);
         }
 
-        if (wanted)
+        if (needed && !moved)
         {
             api.Logger.Notification(
-                "[witchlight] only {0:P0} of blocks have a colour — the next player to join will be asked for a palette",
+                "[witchlight] no client has supplied a palette for this mod set ({0:P0} of blocks "
+                + "have a colour) — the next player to join will be asked for one",
                 palette.Coverage);
         }
 

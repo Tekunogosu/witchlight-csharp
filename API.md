@@ -661,7 +661,7 @@ stop at 512 files, which is well past a heavy mod set and well short of a disk.
 
 **The prefix says which side runs it.** The game gives server commands `/` and
 client commands `.`, and they are separate registries — `/witchlight palette` asks
-the server to request a palette from a named admin, while `.witchlight palette` is
+the server to request a palette from a named player, while `.witchlight palette` is
 a client building one and writing it beside its own world data for an operator to
 move across by hand. The server side is the
 one to reach for; the client side exists for sending something without being
@@ -690,7 +690,7 @@ decided by the sender's privilege when it arrives, not by what asked for it.
 | `/witchlight service [status\|start\|stop]` | the map service the mod runs. `start` ignores `autostart`, which only decides what happens unasked |
 | `/witchlight login` | send yourself a link that logs your browser in as you. Not privileged — every player has settings of their own |
 | `/witchlight mark` | mark where you are looking, using your preset for that block. Not privileged either, and the same one thing `.witchlight mark` does |
-| `/witchlight palette [player]` | ask an admin's client for a palette now, rather than waiting for the next one to join |
+| `/witchlight palette [player]` | ask a client for a palette now — the one way to ask again once a client has supplied one. An operator's command by default |
 | `/witchlight icons [player]` | ask an admin's client for every marker picture again |
 
 On a client, with a dot rather than a slash:

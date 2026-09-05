@@ -52,15 +52,22 @@ public sealed class PortraitExchange(ICoreServerAPI api, string exports)
     private readonly Recent _taken = new(Portraits.FloorMs);
 
     /// <summary>
-    /// Asks a player who has just joined to draw themselves, after a pause.
+    /// Asks a player who has just joined to draw themselves, after a pause, where
+    /// the map has no picture of them yet.
     ///
-    /// Asked on every join rather than once ever, because a seraph that changed
-    /// while its player was away is a picture that is now wrong, and only the
-    /// machine that can see it knows the difference. The pause costs nobody
-    /// anything and saves an empty portrait on every join.
+    /// Once, not on every join: a player whose seraph changes is drawn again by
+    /// their own client, which watches what they wear — see the client's
+    /// `PortraitWatch` — so a join with a picture already stored is a join with
+    /// nothing to ask for. The pause costs nobody anything and saves an empty
+    /// portrait from a client that has not finished loading.
     /// </summary>
     public void AskOnceSettled(IServerPlayer player, Action<string, Action> safely)
     {
+        if (Portraits.StoredFor(_exports, player.PlayerUID) is not null)
+        {
+            return;
+        }
+
         _api.Event.RegisterCallback(_ => safely("asking for a portrait", () =>
         {
             // They may well have left in the meantime, and a packet to somebody

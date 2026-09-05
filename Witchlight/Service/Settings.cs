@@ -73,13 +73,13 @@ public static class Settings
     /// </summary>
     public static void ForWorld(ICoreServerAPI api)
     {
-        // An absent setting means the answer for this side rather than a fixed
-        // one. A dedicated server runs one world out of one data path and its map
-        // has always been where it is; every singleplayer save shares one data
-        // path and would otherwise write into the last world's map. A settings
-        // file written before this setting existed says nothing, and reading that
-        // silence as "off" would leave singleplayer with the fault this fixes.
-        PerWorld = On("per_world", byDefault: !api.Server.IsDedicated);
+        // An absent setting means on. Every singleplayer save shares one data
+        // path and would otherwise write into the last world's map, and a
+        // dedicated server loses nothing by filing its one world the same way. A
+        // settings file written before this setting existed says nothing, and
+        // reading that silence as "off" would leave singleplayer with the fault
+        // this fixes.
+        PerWorld = On("per_world", byDefault: true);
         _exports = MapDirectory.Settle(api, MapData, PerWorld);
         Directory.CreateDirectory(_exports);
     }
@@ -274,11 +274,9 @@ public static class Settings
             write.ArgumentList.Add(Path);
             write.ArgumentList.Add("--vs-data");
             write.ArgumentList.Add(GamePaths.DataPath);
-            // The default for wherever this file is being created, because the
-            // service cannot tell singleplayer from a dedicated server and this
-            // half can. Written once; after that it is the operator's to change.
+            // Written once; after that it is the operator's to change.
             write.ArgumentList.Add("--per-world");
-            write.ArgumentList.Add(api.Server.IsDedicated ? "false" : "true");
+            write.ArgumentList.Add("true");
             write.ArgumentList.Add("--save-config");
             write.ArgumentList.Add("--print-config");
 

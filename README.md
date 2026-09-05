@@ -49,9 +49,10 @@ The files land in `<data path>/witchlight`, or wherever `map_data` names. With
 `per_world` on they land in a directory named for the world inside it — the world's
 own name and eight characters of its savegame identifier, because two saves called
 "New World" are not rare and one directory between them is one map of two worlds.
-It is off for a dedicated server, which runs one world, and on for singleplayer,
-where every save shares one data path. Turning it on moves the map already there
-down into its own directory rather than leaving it to be written over.
+It is on unless turned off: every singleplayer save shares one data path, and a
+dedicated server that wants its one map directly in the folder turns it off.
+Turning it on moves the map already there down into its own directory rather than
+leaving it to be written over.
 
 The service listens for posts on its
 API channel — loopback, on a port it writes into `api.json` in that same directory
@@ -267,12 +268,14 @@ So when the server still cannot build a usable palette, it asks for one.
 
 ```
 server boot ─► fingerprint the block registry
-             ─► palette stored for this fingerprint, and good enough?  ──yes──► done
+             ─► a client's palette stored for this fingerprint, mod set unmoved?  ──yes──► done
                           │no
                           ▼
       a player joins, or /witchlight palette ─► "send me a palette"
                           ▼
       client builds one from its own assets ─► six packets ─► merged and written
+                          ▼
+      nobody else is asked until a mod changes or /witchlight palette is run
 ```
 
 **The fingerprint is the block registry and nothing else** — game version, then
@@ -289,18 +292,10 @@ like, so where one is in the room there is no reason to ask anybody else and eve
 reason not to — a colour taken from a player is a colour an admin's answer will
 only have to replace. Where there is no admin, one of the others is picked at
 random rather than by connection order, so a server does not put the same person's
-client to work every time it comes up. Nobody outside `commands.palette` is asked
-at all: a server that has narrowed who may ask for a palette by hand has said
-something about whose assets it trusts, and asking round the room past that would
-be the mod overruling its own operator.
-
-**An admin is asked once even when nothing is missing.** A palette drawn entirely
-from the recording above is complete and still nobody who could decide what this
-server looks like has decided — a texture pack changes every colour on the map
-without changing a single block code. So the palette records whether an admin's
-own assets settled it, and while none has, the first admin to join is asked. Their
-answer either matches what is stored, in which case nothing is written and nothing
-is redrawn, or it replaces it. `status` says which of the two the map is in.
+client to work every time it comes up. Anybody with the mod may be asked:
+`commands.palette` says who may start a request by hand, and nothing about whom
+one may be sent to. A palette from a client the server did not ask is refused,
+which is what keeps that gate a gate.
 
 **Anybody is asked; only an admin may overwrite.** Admins alone used to be asked,
 which is the right instinct and the wrong rule: a dedicated server is run from a
@@ -334,28 +329,16 @@ asking about, and the map drew air and those invisible placeholders as ground
 nobody had ever explored. A palette from a client older than the field says
 nothing rather than saying "draws", which is what keeps it safe to take.
 
-**Two things make a palette worth asking for, and the second is the one that keeps
-a working map correct.** The first is coverage: below 90% of blocks coloured there
-is no map to speak of, and a dedicated server scores about 15% on its own against
-a full install's 99%, so the threshold separates them cleanly. The second is a
-named gap — a block the palette says draws something and has no colour for. A
-palette can be 98% covered and still have no colour for bare soil, which is the
-block a player uncovers every time they dig; coverage is one number over fourteen
-thousand blocks and cannot see that, so the gaps themselves are watched. A gap is
-asked about on the export beat as well as on join, because a colour the map has not
-got is not something a player fixes by rejoining and on a small server nobody may
-rejoin for days.
-
-**Each player is asked once, and that is what stops the asking.** One is all a
-player has to give: a client sends the whole of what its assets can colour, and
-everything it could fill the merge has filled. Somebody who joins later has not
-been asked and may have the mod set that answers, so the map goes on repairing
-itself as people arrive — and a server where nobody can supply the last colour
-stops asking rather than going round the room for ever. What is still missing is
-named in the log and in `status`, which is a report to make to the mod shipping
-those blocks rather than a command to run again here. `/witchlight palette` opens
-the question again, for the one case none of this can see: the colours themselves
-moving under the same block ids.
+**One thing makes a palette worth asking for unprompted: no client has supplied
+one for this mod set.** Nothing stored from a client for this block registry, or a
+mod set that moved since it was stored, and the next player to join is asked — on
+the export beat too, one player at a time, each once, so a first joiner without
+the mod does not leave the map colourless. The first whole palette to arrive ends
+it: from then on the map is that client's colours until a mod changes or an admin
+runs `/witchlight palette`. Coverage and named gaps are reported in the log and in
+`status` and are not a reason to ask again — a block no client can colour is a
+block whose mod ships no texture, which is a report to make to that mod rather
+than a question to go round the room with for ever.
 
 **It is sent in slices.** Block codes are not sent at all: the server turns ids
 back into codes from its own registry, and those codes were the bulk of the
@@ -382,10 +365,9 @@ person typing them. `admin` and `player` are spelled out; any privilege the game
 knows works in their place, so a server with a moderator role can name it, and a
 name it does not know is refused to everyone but an admin and said in the log.
 
-The same setting decides whom a thing may be taken *from*: a server that lets its
-players fetch a palette lets its players be fetched from, because that is the same
-question asked from the other end. What guards the map either way is what is done
-with the answer — see the palette section above.
+Each setting decides who may start a request and nothing about whom it may be
+sent to: the server asks whichever client can answer. What guards the map either
+way is what is done with the answer — see the palette section above.
 
 `witchlight status` prints the table in force, a line per settings table. That is
 where to look on a server upgrading into this, since a settings file written before
@@ -396,7 +378,7 @@ owns just to add a section of defaults it is already following.
 |---|---|
 | `status` | where exports live, which source the palette came from, its coverage and fingerprint, whether that fingerprint is stale, where the world counts from, whether the map service is up, and how much terrain the map holds |
 | `service [status\|start\|stop]` | the map service this mod runs. `start` runs it whatever `autostart` says, because somebody typing the command has asked |
-| `palette [player]` | ask for a palette now, rather than waiting for the next join. An admin's replaces what is stored, which is what makes this the way to correct a map |
+| `palette [player]` | ask a client for a palette now — the one way to ask again once a client has supplied one. An admin's replaces what is stored, which is what makes this the way to correct a map |
 | `icons [player]` | ask for every marker picture again, replacing what an admin sent |
 | `export` | read the surface of every loaded chunk again and send it |
 | `login` | send yourself a link to your own page of the map. Acts on nobody but its caller, which is why it is anybody's by default |

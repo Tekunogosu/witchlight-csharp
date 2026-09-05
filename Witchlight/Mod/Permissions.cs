@@ -9,24 +9,24 @@ namespace Witchlight;
 /// <summary>
 /// Who may do each of the things this mod gates.
 ///
-/// One question with one answer, asked in three places: the privilege a
-/// subcommand is registered under, whether a named player may be asked for the
-/// thing a command fetches, and who is in the room when the server needs a
-/// palette. Those used to be a literal `Privilege.controlserver` at each site and
-/// a `bool admin` threaded between them, which is three chances to disagree about
+/// One question with one answer: the privilege a subcommand is registered under,
+/// and whether the person on the web map may do what its buttons offer. Those
+/// used to be a literal `Privilege.controlserver` at each site and a `bool
+/// admin` threaded between them, which is several chances to disagree about
 /// what an operator asked for.
 ///
 /// The split the defaults draw is between a command that changes what the server
 /// is doing and a command that answers a question about the person typing it.
-/// Writing the world, reading the whole of the map's state and starting or
-/// stopping the service are an operator's; a link to your own page, a marker
-/// where you are standing, and asking a client for the pictures the map draws
-/// with are anybody's.
+/// Writing the world, reading the whole of the map's state, starting or stopping
+/// the service and asking for the palette every block is coloured by are an
+/// operator's; a link to your own page, a marker where you are standing, and
+/// asking a client for a portrait or the marker pictures are anybody's.
 ///
-/// Loosening one of the last three costs less than it looks. What a client sends
-/// back is taken on the same terms whoever asked for it — only an admin's palette
-/// or icon may replace one already chosen, and anybody else's fills gaps — so
-/// these decide who may ask rather than who may repaint the map. See
+/// Each gate decides who may start a request and nothing about whom it may be
+/// sent to. The server asks whichever client can answer — see
+/// <see cref="PaletteExchange.AskAround"/> — and what a client sends back is
+/// taken on the same terms whoever asked for it: only an admin's palette or icon
+/// may replace one already chosen, and anybody else's fills gaps. See
 /// <see cref="PaletteExchange.Accept"/> and <see cref="IconExchange.Accept"/>.
 ///
 /// Not everything gated is a command. The web map asks two questions of its own —
@@ -86,7 +86,7 @@ public static class Permissions
         [Login] = new($"{CommandTable}.{Login}", Privilege.chat),
         [Mark] = new($"{CommandTable}.{Mark}", Privilege.chat),
         [Portrait] = new($"{CommandTable}.{Portrait}", Privilege.chat),
-        [Palette] = new($"{CommandTable}.{Palette}", Privilege.chat),
+        [Palette] = new($"{CommandTable}.{Palette}", Privilege.controlserver),
         [Icons] = new($"{CommandTable}.{Icons}", Privilege.chat),
         [Export] = new($"{CommandTable}.{Export}", Privilege.controlserver),
         [Status] = new($"{CommandTable}.{Status}", Privilege.controlserver),
