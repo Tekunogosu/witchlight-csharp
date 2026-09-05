@@ -13,6 +13,23 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.47.3
+
+**Deploy note:** both halves, upgraded together; nothing is cleared.
+
+- The preset table is laid out the way the game's own lists are, so it stays
+  inside its window and the scrollbar scrolls it. Every other row is shaded,
+  the panel is wider, and a name or block too long for its column is cut with
+  an ellipsis rather than running off the edge.
+
+## 0.47.2
+
+**Deploy note:** both halves, upgraded together; nothing is cleared.
+
+- The in-game preset panel is a table: a search box over Name and Block
+  columns, both left-aligned. A header press sorts by that column and a
+  second press turns it round; the search matches either column.
+
 ## 0.47.1
 
 **Deploy note:** both halves, upgraded together; nothing is cleared. Moved for

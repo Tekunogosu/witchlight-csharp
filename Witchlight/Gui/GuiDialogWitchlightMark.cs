@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Config;
@@ -34,6 +35,8 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
     private const string Composed = "witchlight-mark";
     private const string PresetsComposed = "witchlight-mark-presets";
     private const string PresetsScrollbar = "presetsScrollbar";
+    private const string PresetsFind = "presetsFind";
+    private const string PresetsRows = "presetsRows";
     private const string NameInput = "nameInput";
     private const string ColourPicker = "colorPicker";
     private const string PicturePicker = "iconPicker";
@@ -259,10 +262,19 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
     }
 
     /// <summary>How the preset list is laid out: one row per preset, so many
-    ///  shown at once, and the width the longest name is given.</summary>
+    ///  shown at once, how wide the table is, and where the block column starts.</summary>
     private const int RowHeight = 28;
     private const int RowsShown = 8;
-    private const int ListWidth = 300;
+    private const int ListWidth = 440;
+    private const int NameWidth = 150;
+    private const int CellPad = 6;
+
+    /// <summary>What was typed into the search box, lowercased once.</summary>
+    private string _finding = "";
+
+    /// <summary>Which column the rows are in order of, and which way.</summary>
+    private bool _byBlock;
+    private bool _descending;
 
     /// <summary>Whether the list is on the screen.</summary>
     private bool Listing => Composers[PresetsComposed] is { Enabled: true };
@@ -282,7 +294,31 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
     }
 
     /// <summary>
-    /// Lays the list out beside the window, to its left.
+    /// The presets as the table shows them: those the search matches, in the
+    /// order the headers say.
+    ///
+    /// One function rather than a filter in one place and a sort in another, so
+    /// what is on the screen is the answer to one question — and a question
+    /// that can be asked without a screen.
+    /// </summary>
+    public static List<PresetOffer> Shown(
+        IEnumerable<PresetOffer> offered, string finding, bool byBlock, bool descending)
+    {
+        var wanted = finding.Trim().ToLowerInvariant();
+        var rows = offered
+            .Where(preset => wanted.Length == 0
+                || preset.Title.ToLowerInvariant().Contains(wanted)
+                || preset.Pattern.ToLowerInvariant().Contains(wanted));
+        var ordered = byBlock
+            ? rows.OrderBy(preset => preset.Pattern, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(preset => preset.Title, StringComparer.OrdinalIgnoreCase)
+            : rows.OrderBy(preset => preset.Title, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(preset => preset.Pattern, StringComparer.OrdinalIgnoreCase);
+        return (descending ? ordered.Reverse() : ordered).ToList();
+    }
+
+    /// <summary>
+    /// Lays the table out beside the window, to its left.
     ///
     /// Its own composer under this dialog rather than a dialog of its own, so it
     /// opens and closes with the window and takes the mouse the same way. Placed
@@ -290,23 +326,33 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
     /// wide as its pickers came out, which is as many columns as the server has
     /// pictures, so nothing here may assume that width.
     ///
-    /// The rows sit in a clipped area with a scrollbar, because a list is as long
-    /// as somebody's habits and a window is not.
+    /// A search box over two headed columns, name and block. The rows are one
+    /// container inside a clipped inset, which is the shape the game's own mod
+    /// list takes: the container owns every cell's bounds, so moving it is what
+    /// scrolling is, and the clip is what stops the rows past the bottom being
+    /// drawn over the window. Every other row is shaded, each cell is its own
+    /// left-aligned text cut to its column, and a button with no face lies
+    /// behind the cells so a press anywhere on the row picks it. Typing or
+    /// pressing a header lays the whole table out again: the rows are cheap and
+    /// a table that patches itself is one that can disagree with its own headers.
     /// </summary>
     private void ShowPresets()
     {
         Composers[PresetsComposed]?.Dispose();
 
-        var offered = _offer.Presets;
-        var rows = ElementBounds.Fixed(0, 0, ListWidth, Math.Max(1, offered.Count) * RowHeight);
-        var clip = ElementBounds.Fixed(0, 28, ListWidth, RowsShown * RowHeight);
-        var inset = clip.ForkBoundingParent(3, 3, 3, 3);
-        var scroll = clip.RightCopy(6).WithFixedWidth(20);
-        clip.WithChild(rows);
+        var shown = Shown(_offer.Presets, _finding, _byBlock, _descending);
+        var find = ElementBounds.Fixed(0, 28, ListWidth, 26);
+        var nameHead = ElementBounds.Fixed(0, 62, NameWidth, 24);
+        var blockHead = ElementBounds.Fixed(NameWidth + CellPad, 62, ListWidth - NameWidth - CellPad, 24);
+        var inset = ElementBounds.Fixed(0, 92, ListWidth, RowsShown * RowHeight + 6);
+        var clip = inset.ForkContainingChild(3, 3, 3, 3);
+        var rows = clip.ForkContainingChild(0, 0, 0, -3);
+        rows.fixedHeight = Math.Max(1, shown.Count) * RowHeight;
+        var scroll = ElementStdBounds.VerticalScrollbar(inset);
 
         var inside = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
         inside.BothSizing = ElementSizing.FitToChildren;
-        inside.WithChildren(inset, clip, scroll);
+        inside.WithChildren(find, nameHead, blockHead, inset, scroll);
 
         var beside = ElementStdBounds.AutosizedMainDialog
             .WithAlignment(EnumDialogArea.RightMiddle)
@@ -317,34 +363,127 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
             .AddShadedDialogBG(inside, false)
             .AddDialogTitleBar("Presets", HidePresets)
             .BeginChildElements(inside)
+            .AddTextInput(find, OnFinding, CairoFont.TextInput(), PresetsFind)
+            .AddSmallButton(Headed("Name", byBlock: false), () => Reorder(byBlock: false), nameHead, EnumButtonStyle.Small)
+            .AddSmallButton(Headed("Block", byBlock: true), () => Reorder(byBlock: true), blockHead, EnumButtonStyle.Small)
             .AddInset(inset, 3)
             .AddVerticalScrollbar(OnPresetsScrolled, scroll, PresetsScrollbar)
-            .BeginClip(clip);
+            .BeginClip(clip)
+            .AddContainer(rows, PresetsRows)
+            .EndClip()
+            .EndChildElements();
 
-        if (offered.Count == 0)
+        var table = composer.GetContainer(PresetsRows);
+        var cell = CairoFont.WhiteSmallText().WithOrientation(EnumTextOrientation.Left);
+        var blockWidth = ListWidth - NameWidth - CellPad * 3 - 6;
+
+        if (shown.Count == 0)
         {
-            composer.AddStaticText(
-                "Nothing kept yet. Tick \"Set as preset\" here, or make one on the map.",
-                CairoFont.WhiteSmallText(),
-                ElementBounds.Fixed(6, 4, ListWidth - 12, RowHeight * 2).WithParent(rows));
+            table.Add(new GuiElementStaticText(capi,
+                _offer.Presets.Count == 0
+                    ? "Nothing kept yet. Tick \"Set as preset\" here, or make one on the map."
+                    : "Nothing matches.",
+                EnumTextOrientation.Left,
+                ElementBounds.Fixed(CellPad, 4, ListWidth - CellPad * 2, RowHeight * 2),
+                cell));
         }
 
-        for (var at = 0; at < offered.Count; at++)
+        for (var at = 0; at < shown.Count; at++)
         {
-            var preset = offered[at];
-            composer.AddSmallButton(
-                $"{preset.Title} — {preset.Pattern}",
-                () => Pick(preset),
-                ElementBounds.Fixed(0, at * RowHeight, ListWidth, RowHeight - 2).WithParent(rows),
-                EnumButtonStyle.Small);
+            var preset = shown[at];
+            var top = at * RowHeight;
+            if (at % 2 == 1)
+            {
+                table.Add(new GuiElementCustomDraw(capi,
+                    ElementBounds.Fixed(0, top, ListWidth, RowHeight), Stripe));
+            }
+            table.Add(new GuiElementTextButton(capi, "", cell, cell, () => Pick(preset),
+                ElementBounds.Fixed(0, top, ListWidth, RowHeight), EnumButtonStyle.None));
+            table.Add(new GuiElementStaticText(capi,
+                Fitted(cell, preset.Title, NameWidth - CellPad),
+                EnumTextOrientation.Left,
+                ElementBounds.Fixed(CellPad, top + 5, NameWidth - CellPad, RowHeight - 6),
+                cell));
+            table.Add(new GuiElementStaticText(capi,
+                Fitted(cell, preset.Pattern, blockWidth),
+                EnumTextOrientation.Left,
+                ElementBounds.Fixed(NameWidth + CellPad, top + 5, blockWidth, RowHeight - 6),
+                cell));
         }
 
-        composer.EndClip().EndChildElements().Compose();
+        composer.Compose();
+        rows.CalcWorldBounds();
+        clip.CalcWorldBounds();
         composer.GetScrollbar(PresetsScrollbar)
             .SetHeights((float)clip.fixedHeight, (float)rows.fixedHeight);
+        var box = composer.GetTextInput(PresetsFind);
+        box.SetPlaceHolderText("find a preset");
+        if (_finding.Length > 0)
+        {
+            box.SetValue(_finding);
+        }
 
         _presetRows = rows;
         Composers[PresetsComposed] = composer;
+    }
+
+    /// <summary>The shading every other row wears, so the eye keeps its line.</summary>
+    private static void Stripe(Cairo.Context ctx, Cairo.ImageSurface surface, ElementBounds bounds)
+    {
+        ctx.SetSourceRGBA(1, 1, 1, 0.06);
+        ctx.Rectangle(bounds.drawX, bounds.drawY, bounds.InnerWidth, bounds.InnerHeight);
+        ctx.Fill();
+    }
+
+    /// <summary>
+    /// The text, or as much of it as its column holds with an ellipsis after.
+    ///
+    /// Measured in the font it is drawn in, against the column's unscaled width
+    /// brought up to the screen's scale, so what fits at one interface size
+    /// fits at another.
+    /// </summary>
+    private static string Fitted(CairoFont font, string text, double width)
+    {
+        var room = width * RuntimeEnv.GUIScale;
+        if (font.GetTextExtents(text).Width <= room)
+        {
+            return text;
+        }
+        var kept = text;
+        while (kept.Length > 1 && font.GetTextExtents(kept + "…").Width > room)
+        {
+            kept = kept[..^1];
+        }
+        return kept.TrimEnd() + "…";
+    }
+
+    /// <summary>A header's words, with an arrow on the one the rows follow.</summary>
+    private string Headed(string name, bool byBlock) =>
+        byBlock == _byBlock ? name + (_descending ? " ▼" : " ▲") : name;
+
+    /// <summary>Follows the column pressed, or turns it round when it already is.</summary>
+    private bool Reorder(bool byBlock)
+    {
+        _descending = byBlock == _byBlock && !_descending;
+        _byBlock = byBlock;
+        ShowPresets();
+        return true;
+    }
+
+    /// <summary>
+    /// Lays the rows out again as the search changes. The box is rebuilt with
+    /// the table and given the text back, so typing is not interrupted by it.
+    /// </summary>
+    private void OnFinding(string typed)
+    {
+        if (typed == _finding)
+        {
+            return;
+        }
+        _finding = typed;
+        ShowPresets();
+        Composers[PresetsComposed]?.FocusElement(
+            Composers[PresetsComposed]!.GetTextInput(PresetsFind).TabIndex);
     }
 
     /// <summary>How wide the window is on the screen, in the unscaled units a
