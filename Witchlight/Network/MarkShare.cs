@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using ProtoBuf;
 
 namespace Witchlight;
@@ -112,6 +113,31 @@ public class MarkReply
     /// <summary>Whether the window's "keep as preset" starts on, which is what
     /// this person set on the map for themselves.</summary>
     [ProtoMember(16)] public bool KeepPreset { get; set; }
+
+    /// <summary>
+    /// Everything this person has kept, for the window to offer as a starting
+    /// point. Sent only with an answer that opens the window: a marker already
+    /// made has no use for the list, and the list is the bulk of the packet.
+    /// </summary>
+    [ProtoMember(17)] public List<PresetOffer> Presets { get; set; } = new();
+}
+
+/// <summary>
+/// One preset as the window is offered it: what a marker made from it would be.
+///
+/// The service's own record carries the same five things — see
+/// <see cref="Preset"/> — and this is that record in the shape that travels,
+/// with "nobody said" for its privacy spelled the way <see cref="Mark"/> spells
+/// it, so the window can fall back the same way the server does.
+/// </summary>
+[ProtoContract]
+public class PresetOffer
+{
+    [ProtoMember(1)] public string Pattern { get; set; } = "";
+    [ProtoMember(2)] public string Title { get; set; } = "";
+    [ProtoMember(3)] public string Icon { get; set; } = "";
+    [ProtoMember(4)] public string Color { get; set; } = "";
+    [ProtoMember(5)] public int Private { get; set; } = Mark.Unsaid;
 }
 
 /// <summary>

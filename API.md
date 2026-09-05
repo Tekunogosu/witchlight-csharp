@@ -445,8 +445,8 @@ without the token, `404` for another path, and `405` for anything but a POST. A
 post may carry 8 MB at most. The service does not read a waypoint — the mod knows
 what one is, and the service knows it is holding arrays to hand to a browser.
 
-Markers are written to `markers.json` when they arrive and differ; players never
-touch the disk. Posts are dropped rather than queued if the previous one has not
+Markers are kept in the service's database when they arrive and differ; players
+never touch the disk. Posts are dropped rather than queued if the previous one has not
 finished, and a service that cannot be reached is logged once rather than every
 tick.
 
@@ -469,15 +469,13 @@ the file — the format has one owner and it is the service.
 |---|---|---|
 | `palette.json` | at asset load, or when a client sends one | every block: id, average colour or which kind of colourless it is, which colour maps tint it |
 | `colormaps/*.png` | at asset load | the game's climate and season lookup images |
-| `map.sqlite` | **by the service**, as terrain arrives | every chunk the map holds, every version of one somebody still remembers, and what each person has seen |
+| `map.sqlite` | **by the service**, as terrain arrives and as the rest changes | every chunk the map holds, every version of one somebody still remembers, what each person has seen, who is logged in, the last markers posted, everybody's presets and settings, and where players stood lately — each a row replaced when it differs |
 | `icons/{name}.svg` | at asset load, or when a client sends them | the picture each marker is drawn with |
 | `world.json` | once the world is ready, and on any export until it can be | where the world counts from, so coordinates match what a player reads in game |
-| `markers.json` | **by the service**, when markers arrive and differ | the last markers posted, sorted by who may see them |
 | `portraits/{uid in hex}.png` | on that player's every join, and 30s after their character last changed | a picture of that player's seraph, drawn on their own machine |
 | `service.json` | **by the service**, as it binds | the addresses the map answers on, the one worth giving somebody else first. Removed when the mod stops the service, so nothing hands a player the address of a map that is gone |
 | `api.json` | **by the service**, as it binds | the port and token of the API channel, mode `0600`. Removed when the mod stops the service — a port that has been taken over by something else answers, and there is no telling what |
 | `blocknames.json` | at asset load | what the game calls each block, keyed on the same code the palette is, so that marking something can start from its name |
-| `preferences.json` | **by the service**, when somebody changes theirs | each person's marker presets and defaults, against their uid |
 | `tiles/{level}/…` | **by the service**, as terrain arrives | every zoom level above the finest, which is drawn on demand and not stored |
 
 

@@ -13,6 +13,21 @@ While Witchlight is alpha, a format change **clears the map** on start rather th
 upgrading it. It rebuilds as players explore. Read the release note before
 upgrading a server whose map you would rather keep.
 
+## 0.47.1
+
+**Deploy note:** both halves, upgraded together; nothing is cleared. Moved for
+the map service: markers, preferences and visited chunks live in its database
+— see its changelog for what to carry across.
+
+## 0.47.0
+
+**Deploy note:** both halves, upgraded together; nothing is cleared.
+
+- The in-game marker window has a "Presets" button between Cancel and Save. It
+  opens a list of everything you have kept beside the window; choosing one
+  fills the name, colour, picture and privacy the way the key would have over
+  that preset's own block. The marker stays on the block you are looking at.
+
 ## 0.46.8
 
 **Deploy note:** both halves, upgraded together; nothing is cleared. The palette

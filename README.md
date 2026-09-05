@@ -794,7 +794,7 @@ together.
 | `Icons/` | the marker icons, which arrive the same way a palette does |
 | `Network/` | what travels between the two sides, and how it is sliced to fit |
 | `Service/` | the other half: talking to it, running it, and what the operator set |
-| `Gui/` | the one window this mod draws in game: making a marker from a preset |
+| `Gui/` | the windows this mod draws in game: making a marker, with a list of presets to start it from, and somebody else's marker |
 | `Util/` | writing, failing, patterns, and identity — none of which know this mod's lifecycle |
 
 Three of those folders each hold their own `*Exchange.cs`, because the three

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
@@ -87,6 +88,19 @@ public static class Marking
                 ? "Nothing there to mark. Look at a block, or stand on one."
                 : $"No preset for {Named(block)}.";
             reply.Yours = true;
+            // Everything they have kept, for the window to start from instead
+            // of the block's defaults. In the order the map lists them.
+            reply.Presets = person.Presets
+                .OrderBy(kept => kept.Title, StringComparer.OrdinalIgnoreCase)
+                .Select(kept => new PresetOffer
+                {
+                    Pattern = kept.Pattern,
+                    Title = kept.Title,
+                    Icon = kept.Icon,
+                    Color = kept.Color,
+                    Private = kept.Private is { } said ? Mark.Says(said) : Mark.Unsaid,
+                })
+                .ToList();
             return reply;
         }
 

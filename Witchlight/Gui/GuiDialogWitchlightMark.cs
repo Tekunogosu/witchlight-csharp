@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using Vintagestory.API.Client;
+using Vintagestory.API.Config;
 using Vintagestory.GameContent;
 
 namespace Witchlight;
@@ -21,10 +22,18 @@ namespace Witchlight;
 /// The colours and the pictures are the game's own, read off the waypoint layer,
 /// so what is offered here is exactly what the game's own window offers and a mod
 /// that adds one adds it here.
+///
+/// A preset that names some other block can still be the right start: "Presets"
+/// opens a list of everything this person has kept beside the window, and
+/// choosing one fills the name, the colour, the picture and who may see it, the
+/// way pressing the key over that preset's own block would have. The block the
+/// marker is made on is not changed by it — that is where they are standing.
 /// </summary>
 public class GuiDialogWitchlightMark : GuiDialogGeneric
 {
     private const string Composed = "witchlight-mark";
+    private const string PresetsComposed = "witchlight-mark-presets";
+    private const string PresetsScrollbar = "presetsScrollbar";
     private const string NameInput = "nameInput";
     private const string ColourPicker = "colorPicker";
     private const string PicturePicker = "iconPicker";
@@ -40,6 +49,9 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
     private string _colour;
     private bool _private;
     private bool _preset;
+
+    /// <summary>The rows of the preset list, moved as the scrollbar moves.</summary>
+    private ElementBounds? _presetRows;
 
     public GuiDialogWitchlightMark(
         ICoreClientAPI capi, WaypointMapLayer layer, MarkReply offer, Action<MarkAsk> send)
@@ -151,6 +163,12 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
             .AddSmallButton("Cancel", OnCancel,
                 row.FlatCopy().FixedUnder(toggle, 30).WithFixedWidth(100),
                 EnumButtonStyle.Normal)
+            // Between the two ways out: it is neither, being a way to fill the
+            // window in rather than to leave it.
+            .AddSmallButton("Presets", OnPresets,
+                row.FlatCopy().FixedUnder(toggle, 30).WithFixedWidth(100)
+                    .WithAlignment(EnumDialogArea.CenterFixed),
+                EnumButtonStyle.Normal)
             .AddSmallButton("Save", OnSave,
                 row.FlatCopy().FixedUnder(toggle, 30).WithFixedWidth(100)
                     .WithAlignment(EnumDialogArea.RightFixed),
@@ -238,6 +256,158 @@ public class GuiDialogWitchlightMark : GuiDialogGeneric
     {
         TryClose();
         return true;
+    }
+
+    /// <summary>How the preset list is laid out: one row per preset, so many
+    ///  shown at once, and the width the longest name is given.</summary>
+    private const int RowHeight = 28;
+    private const int RowsShown = 8;
+    private const int ListWidth = 300;
+
+    /// <summary>Whether the list is on the screen.</summary>
+    private bool Listing => Composers[PresetsComposed] is { Enabled: true };
+
+    /// <summary>Shows the list, or puts it away: the one button does both.</summary>
+    private bool OnPresets()
+    {
+        if (Listing)
+        {
+            HidePresets();
+        }
+        else
+        {
+            ShowPresets();
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Lays the list out beside the window, to its left.
+    ///
+    /// Its own composer under this dialog rather than a dialog of its own, so it
+    /// opens and closes with the window and takes the mouse the same way. Placed
+    /// against the window's own edge by measuring the window: the window is as
+    /// wide as its pickers came out, which is as many columns as the server has
+    /// pictures, so nothing here may assume that width.
+    ///
+    /// The rows sit in a clipped area with a scrollbar, because a list is as long
+    /// as somebody's habits and a window is not.
+    /// </summary>
+    private void ShowPresets()
+    {
+        Composers[PresetsComposed]?.Dispose();
+
+        var offered = _offer.Presets;
+        var rows = ElementBounds.Fixed(0, 0, ListWidth, Math.Max(1, offered.Count) * RowHeight);
+        var clip = ElementBounds.Fixed(0, 28, ListWidth, RowsShown * RowHeight);
+        var inset = clip.ForkBoundingParent(3, 3, 3, 3);
+        var scroll = clip.RightCopy(6).WithFixedWidth(20);
+        clip.WithChild(rows);
+
+        var inside = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
+        inside.BothSizing = ElementSizing.FitToChildren;
+        inside.WithChildren(inset, clip, scroll);
+
+        var beside = ElementStdBounds.AutosizedMainDialog
+            .WithAlignment(EnumDialogArea.RightMiddle)
+            .WithFixedAlignmentOffset(-(GuiStyle.DialogToScreenPadding + WindowWidth() + 8), 0);
+
+        var composer = capi.Gui
+            .CreateCompo(PresetsComposed, beside)
+            .AddShadedDialogBG(inside, false)
+            .AddDialogTitleBar("Presets", HidePresets)
+            .BeginChildElements(inside)
+            .AddInset(inset, 3)
+            .AddVerticalScrollbar(OnPresetsScrolled, scroll, PresetsScrollbar)
+            .BeginClip(clip);
+
+        if (offered.Count == 0)
+        {
+            composer.AddStaticText(
+                "Nothing kept yet. Tick \"Set as preset\" here, or make one on the map.",
+                CairoFont.WhiteSmallText(),
+                ElementBounds.Fixed(6, 4, ListWidth - 12, RowHeight * 2).WithParent(rows));
+        }
+
+        for (var at = 0; at < offered.Count; at++)
+        {
+            var preset = offered[at];
+            composer.AddSmallButton(
+                $"{preset.Title} — {preset.Pattern}",
+                () => Pick(preset),
+                ElementBounds.Fixed(0, at * RowHeight, ListWidth, RowHeight - 2).WithParent(rows),
+                EnumButtonStyle.Small);
+        }
+
+        composer.EndClip().EndChildElements().Compose();
+        composer.GetScrollbar(PresetsScrollbar)
+            .SetHeights((float)clip.fixedHeight, (float)rows.fixedHeight);
+
+        _presetRows = rows;
+        Composers[PresetsComposed] = composer;
+    }
+
+    /// <summary>How wide the window is on the screen, in the unscaled units a
+    ///  fixed offset is given in.</summary>
+    private double WindowWidth() =>
+        SingleComposer.Bounds.OuterWidth / RuntimeEnv.GUIScale;
+
+    private void OnPresetsScrolled(float value)
+    {
+        if (_presetRows is null)
+        {
+            return;
+        }
+        _presetRows.fixedY = -value;
+        _presetRows.CalcWorldBounds();
+    }
+
+    private void HidePresets()
+    {
+        if (Composers[PresetsComposed] is { } list)
+        {
+            list.Enabled = false;
+        }
+    }
+
+    /// <summary>
+    /// Fills the window from a preset, the way the key would have from its block.
+    ///
+    /// Every answer the preset gives is taken; one it does not give — a colour
+    /// the game no longer offers, a privacy nobody set — leaves what the window
+    /// already shows, which is the server's default for this marker.
+    /// </summary>
+    private bool Pick(PresetOffer preset)
+    {
+        if (preset.Title.Length > 0)
+        {
+            SingleComposer.GetTextInput(NameInput).SetValue(preset.Title);
+        }
+        if (Array.IndexOf(_pictures, preset.Icon) >= 0)
+        {
+            _picture = preset.Icon;
+            SingleComposer.IconListPickerSetValue(PicturePicker, Array.IndexOf(_pictures, _picture));
+        }
+        if (Markers.Packed(preset.Color) is { } packed && Array.IndexOf(_colours, packed) >= 0)
+        {
+            _colour = Markers.Hex(packed);
+            SingleComposer.ColorListPickerSetValue(ColourPicker, Chosen(_colour));
+        }
+        if (preset.Private != Mark.Unsaid)
+        {
+            _private = preset.Private == Mark.Private;
+            SingleComposer.GetSwitch(PrivateSwitch).SetValue(_private);
+        }
+        HidePresets();
+        return true;
+    }
+
+    /// <summary>The list goes with the window, however the window went.</summary>
+    public override void OnGuiClosed()
+    {
+        Composers[PresetsComposed]?.Dispose();
+        _presetRows = null;
+        base.OnGuiClosed();
     }
 
     /// <summary>
